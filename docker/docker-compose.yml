@@ -1,0 +1,43 @@
+services:
+  local-image-gen-mcp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: local-image-gen-mcp
+    ports:
+      - "8500:8500"
+    volumes:
+      - ~/.cache/huggingface:/home/appuser/.cache/huggingface
+      - image-outputs:/outputs
+    environment:
+      HF_TOKEN: ${HF_TOKEN}      # from ~/.bashrc — never hardcoded
+      IMAGE_MODEL: qwen_image_2512
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8500"
+      IMAGE_OUTPUT_DIR: /outputs
+      MAX_INFERENCE_STEPS: "50"
+      DEFAULT_CFG_SCALE: "4.0"
+      TORCH_DTYPE: bfloat16
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    shm_size: '8gb'
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8500/mcp"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+volumes:
+  image-outputs:

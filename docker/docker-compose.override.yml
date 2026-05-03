@@ -1,0 +1,10 @@
+# Override for DGX Spark stack integration
+# Usage: docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+services:
+  local-image-gen-mcp:
+    networks:
+      - ai-bridge
+
+networks:
+  ai-bridge:
+    external: true
