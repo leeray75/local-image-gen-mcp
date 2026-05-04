@@ -27,6 +27,8 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+        limits:
+          memory: 40g
     ipc: host
     shm_size: '8gb'
     ulimits:
