@@ -4,20 +4,22 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: local-image-gen-mcp
+    entrypoint: ["python", "server.py"]
     ports:
       - "8500:8500"
     volumes:
-      - ~/.cache/huggingface:/home/appuser/.cache/huggingface
+      - ~/.cache/huggingface:/root/.cache/huggingface
       - image-outputs:/outputs
     environment:
-      HF_TOKEN: ${HF_TOKEN}      # from ~/.bashrc — never hardcoded
+      HF_TOKEN: ${HF_TOKEN}
+      HF_HOME: /root/.cache/huggingface
       IMAGE_MODEL: qwen_image_2512
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8500"
       IMAGE_OUTPUT_DIR: /outputs
       MAX_INFERENCE_STEPS: "50"
       DEFAULT_CFG_SCALE: "4.0"
-      TORCH_DTYPE: bfloat16
+      TORCH_DTYPE: "bfloat16"
     deploy:
       resources:
         reservations:
@@ -32,12 +34,12 @@ services:
         soft: -1
         hard: -1
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8500/mcp"]
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8500)); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 180s
-    restart: unless-stopped
+    restart: no
 
 volumes:
   image-outputs:

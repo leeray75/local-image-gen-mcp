@@ -1,13 +1,18 @@
 """Concrete implementation of BaseImageModel for Qwen-Image-2512.
 
 Uses diffusers DiffusionPipeline with the official Qwen/Qwen-Image-2512 checkpoint.
+
+Fix for NotImplementedError: Cannot copy out of meta tensor:
+  Qwen-Image-2512 uses accelerate's meta device initialization internally.
+  Calling .to(device) after from_pretrained() attempts to copy meta tensors
+  which have no data — this raises NotImplementedError.
+  Solution: pass device_map="balanced" directly to from_pretrained() so
+  accelerate handles device placement during weight loading, never after.
 """
 
 import logging
 import time
 import torch
-from typing import Any
-
 from diffusers import DiffusionPipeline
 
 from .base import BaseImageModel, GenerationRequest, GenerationResult
@@ -15,7 +20,8 @@ from .base import BaseImageModel, GenerationRequest, GenerationResult
 log = logging.getLogger(__name__)
 
 # Default negative prompt from official Qwen-Image-2512 model card.
-# Chinese terms are intentional — the model was heavily trained on Chinese data.
+# Chinese terms are intentional — the model was heavily trained on Chinese data
+# and responds well to Chinese guidance even in English sessions.
 DEFAULT_NEGATIVE_PROMPT = (
     "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，"
     "过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲。"
@@ -31,48 +37,69 @@ class QwenImage2512(BaseImageModel):
 
     def __init__(self, torch_dtype_str: str = "bfloat16") -> None:
         self._pipeline: DiffusionPipeline | None = None
-        self._torch_dtype = torch.bfloat16 if torch_dtype_str == "bfloat16" else torch.float32
+        self._torch_dtype = (
+            torch.bfloat16 if torch_dtype_str == "bfloat16" else torch.float32
+        )
+        # Used only for the Generator seed — device_map handles actual placement
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def load(self) -> None:
-        """Load model weights into GPU/CPU memory."""
+        """Load model weights into GPU memory.
+
+        Uses device_map='balanced' so accelerate places weights during loading.
+        Do NOT call .to(device) after from_pretrained() — meta tensors have no
+        data and cannot be copied post-hoc (raises NotImplementedError).
+        """
         if self._pipeline is not None:
             log.warning("Model already loaded — skipping")
             return
 
         log.info(
             "Loading %s on %s (dtype=%s)...",
-            self.MODEL_ID, self._device, self._torch_dtype,
+            self.MODEL_ID,
+            self._device,
+            self._torch_dtype,
         )
 
-        self._pipeline = DiffusionPipeline.from_pretrained(
-            self.MODEL_ID,
-            torch_dtype=self._torch_dtype,
-        ).to(self._device)
-
         if self._device == "cpu":
+            # CPU path: no device_map, direct load
             log.warning(
-                "Running on CPU — generation will be extremely slow. "
-                "Use a CUDA-capable GPU for production."
+                "CUDA not available — loading on CPU. "
+                "Generation will be extremely slow."
+            )
+            self._pipeline = DiffusionPipeline.from_pretrained(
+                self.MODEL_ID,
+                torch_dtype=self._torch_dtype,
+            )
+        else:
+            # GPU path: device_map handles placement during weight loading
+            # NEVER call .to(device) after this — meta tensor error
+            self._pipeline = DiffusionPipeline.from_pretrained(
+                self.MODEL_ID,
+                torch_dtype=self._torch_dtype,
+                device_map="cuda",
             )
 
-        log.info("Model loaded successfully")
+        log.info("Model loaded successfully on %s", self._device)
 
     def unload(self) -> None:
-        """Release model from memory and free GPU memory."""
+        """Release pipeline from memory and free GPU cache."""
         if self._pipeline is not None:
             del self._pipeline
             self._pipeline = None
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
             log.info("Model unloaded, GPU memory cleared")
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
-        """
-        Generate an image synchronously.
+        """Generate an image synchronously.
 
-        This method is designed to be called via asyncio.to_thread() from
-        an async MCP tool — it blocks the calling thread during diffusion.
+        Called via asyncio.to_thread() from the async MCP tool — blocks
+        the calling thread during diffusion. Never call directly from async.
+
+        Uses true_cfg_scale per official Qwen-Image-2512 model card —
+        NOT guidance_scale, which is a different parameter.
         """
         if self._pipeline is None:
             raise RuntimeError(
@@ -81,6 +108,7 @@ class QwenImage2512(BaseImageModel):
 
         t_start = time.perf_counter()
 
+        # Generator must use the same device as the model
         generator = torch.Generator(device=self._device).manual_seed(request.seed)
 
         output = self._pipeline(
@@ -89,7 +117,7 @@ class QwenImage2512(BaseImageModel):
             width=request.width,
             height=request.height,
             num_inference_steps=request.num_inference_steps,
-            true_cfg_scale=request.cfg_scale,
+            true_cfg_scale=request.cfg_scale,   # official kwarg — NOT guidance_scale
             generator=generator,
         )
 
@@ -98,7 +126,10 @@ class QwenImage2512(BaseImageModel):
 
         log.info(
             "Generated %dx%d image in %.1fs (seed=%d)",
-            request.width, request.height, generation_time, request.seed,
+            request.width,
+            request.height,
+            generation_time,
+            request.seed,
         )
 
         return GenerationResult(

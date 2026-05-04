@@ -25,7 +25,7 @@ local-image-gen-mcp/
 │   ├── image_store.py        # Thread-safe in-memory + disk image store
 │   └── __init__.py
 ├── docker/
-│   ├── Dockerfile            # CUDA 12.8, non-root user, healthcheck
+│   ├── Dockerfile            # NVIDIA NGC container (pytorch:26.04), healthcheck
 │   ├── docker-compose.yml    # Standalone compose (GPU required)
 │   └── docker-compose.override.yml  # Joins ai-bridge network
 └── tests/
