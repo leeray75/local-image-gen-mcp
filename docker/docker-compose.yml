@@ -20,6 +20,7 @@ services:
       MAX_INFERENCE_STEPS: "50"
       DEFAULT_CFG_SCALE: "4.0"
       TORCH_DTYPE: "bfloat16"
+      IMAGE_GPU_MEMORY_LIMIT: "40"  
     deploy:
       resources:
         reservations:
@@ -27,8 +28,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-        limits:
-          memory: 40g
     ipc: host
     shm_size: '8gb'
     ulimits:
