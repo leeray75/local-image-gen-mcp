@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **`get_image_base64(image_id)` tool** — returns a stored image as a plain base64 PNG string so agents can save images to the client filesystem; docstring documents decode-before-write ([spec 003](docs/specs/003-image-retrieval-tools/spec.md))
+- **`get_latest_image_id()` tool** — returns the id and metadata of the most recently generated image without reading the `images://list` resource ([spec 003](docs/specs/003-image-retrieval-tools/spec.md))
+- **`IMAGE_GPU_MEMORY_LIMIT` env var** — caps the model's device memory (GB) via accelerate `max_memory`, offloading excess layers to CPU so the image model can coexist with vLLM on GB10 unified memory. Unset = uncapped with a startup warning ([spec 004](docs/specs/004-memory-bounded-loading/spec.md))
+- Startup logging of memory mode and post-load PyTorch CUDA allocated/reserved memory
+- **Spec-driven development docs** in `docs/specs/` — project constitution plus spec, research, data model, contracts, plan and tasks for features 001–004, with requirement traceability ([index](docs/specs/SPECS.md))
+- `AGENTS.md` ([agents.md](https://agents.md) open format) with setup/test commands, architecture, code style, pitfalls, spec workflow, security and PR guidelines for all coding agents; `CLAUDE.md` imports it via `@AGENTS.md`
+
+### Changed
+
+- **Model loading uses `device_map="balanced"`** instead of `device_map="cuda"` (v0.1.1) — required for `max_memory` to be honored; still avoids post-load `.to()` (meta tensor fix preserved)
+- `docker-compose.yml` sets `IMAGE_GPU_MEMORY_LIMIT: "40"` by default
+
+### Removed
+
+- `deploy.resources.limits.memory: 40g` from `docker-compose.yml` (added in `a42846d`) — a cgroup limit does not change model placement and only OOM-kills the container; replaced by `IMAGE_GPU_MEMORY_LIMIT`
+
+### Known issues
+
+Tracked as open tasks in `docs/specs/`:
+
+- `tests/test_tools.py` is empty — no tests for tools, aspect ratios or the image store
+- `MCP_PATH` is not passed to `FastMCP` (works only because `/mcp` is the SDK default)
+- `cfg_scale` is not clamped to its documented 1.0–10.0 range
+- Concurrent `generate_image` calls are not serialized on the shared pipeline
+- `IMAGE_GPU_MEMORY_LIMIT` is read via `os.getenv` rather than `Settings`, and is missing from `.env.example` and the README
+
 ## [0.1.1] — 2026-05-04
 
 ### Fixed
