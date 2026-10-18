@@ -56,6 +56,6 @@ Run the tasks in order. `[P]` marks a task that can run in parallel with the oth
 - [x] **T018** Independent review against spec.md, the contract and the constitution, with up to 5 implementer↔reviewer rounds.
 - [x] **T019** Fill in the traceability table in spec.md and tick the boxes in this file. Set the spec status to "Implemented (GPU smoke test pending)".
 - [x] **T020** *(only after the operator gives the go-ahead)* GPU smoke test AS-14 and AS-15. Record the timings and memory in the CHANGELOG and the report. *(Done 2026-10-18. Edit-quality finding F-1 is open.)*
-- [ ] **T022** Follow-up for F-1: A/B the edit at `output_resolution=1024` vs 2048, and adjust `EDIT_OUTPUT_RESOLUTION`.
-- [ ] **T023** Follow-up: in the Dockerfile, copy the app code *after* `pip install` so code-only rebuilds reuse the dependency layer.
+- [x] **T022** *(done in 006: A/B run, default 1024)* Follow-up for F-1: A/B the edit at `output_resolution=1024` vs 2048, and adjust `EDIT_OUTPUT_RESOLUTION`.
+- [x] **T023** *(done in 006 FR-006-04: app COPY after pip install; pip step CACHED on rebuild)* Follow-up: in the Dockerfile, copy the app code *after* `pip install` so code-only rebuilds reuse the dependency layer.
 - [x] **T021** Write a summary report in `ai-workspace/reports/`.

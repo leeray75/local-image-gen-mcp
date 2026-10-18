@@ -46,7 +46,7 @@ from diffusers import QwenImage21Pipeline   # module-level, so tests can patch m
 
 class QwenImage21(BaseImageModel):
     MODEL_ID = "Qwen/Qwen-Image-2.1"
-    EDIT_OUTPUT_RESOLUTION = 2048
+    EDIT_OUTPUT_RESOLUTION = 2048   # superseded by 006: constructor argument, default 1024
     ASPECT_RATIOS = {"1:1": (2048, 2048), "4:3": (2400, 1792), "3:4": (1792, 2400),
                      "3:2": (2528, 1696), "2:3": (1696, 2528), "16:9": (2752, 1536), "9:16": (1536, 2752)}
     TRANSPARENT_PROMPT = ("This is an RGBA image with transparency. {prompt} "

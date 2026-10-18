@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented. GPU smoke test passed 2026-10-18, with one open quality finding on edits (F-1). |
+| **Status** | Implemented. GPU smoke test passed 2026-10-18, with one quality finding on edits (F-1), resolved by 006. |
 | **Constitution** | I, II, III, IV, V, VI, VII, VIII |
 | **Depends on** | [001](../001-image-generation-server/spec.md), [002](../002-container-deployment/spec.md), [003](../003-image-retrieval-tools/spec.md), [004](../004-memory-bounded-loading/spec.md) |
 | **Supersedes** | 001 R-5 (2512 pipeline facts and resolution table), the 2512 backend, `negative_defaults` prompt |
@@ -28,7 +28,7 @@ Right now the server can only generate from text, at about 1.3K, and agents have
 | P-4 | T2I resolution | The model card's **native 2K table** |
 | P-5 | Edit tool | A separate **`edit_image`** tool. `generate_image` stays text-only. |
 | P-6 | Reference input | **Store image IDs and base64** strings, which can be mixed |
-| P-7 | Edit output size | Same aspect ratio as the input, **2K-class** (`output_resolution=2048`), with an optional `aspect_ratio` override |
+| P-7 | Edit output size | Same aspect ratio as the input, **2K-class** (`output_resolution=2048`; *superseded by 006: default 1024, `EDIT_OUTPUT_RESOLUTION`*), with an optional `aspect_ratio` override |
 | M-1 | Memory | Measured 2026-10-18: 121 GiB total, ~28 GiB free with vLLM at `gpu-memory-utilization 0.6` (~73 GB). **The operator stops vLLM while the image server runs.** Quantization is a possible later feature. |
 | P-8 | RGBA | A **`transparent: bool` flag** on both tools |
 
@@ -112,7 +112,7 @@ As in 001: **Agent**, **Operator**, and **Backend author**.
   - the format is unsupported
   - the decoded size is over `MAX_REFERENCE_IMAGE_MB` (default 20)
   - the image is over Pillow's decompression-bomb pixel limit
-- **FR-005-14** With `aspect_ratio` null, the output MUST match the aspect ratio of the **last** reference at about 2048² pixel area (`output_resolution=2048`). With `aspect_ratio` set, the output is that ratio's table size.
+- **FR-005-14** With `aspect_ratio` null, the output MUST match the aspect ratio of the **last** reference at about 2048² pixel area (`output_resolution=2048`; *superseded by 006: about `EDIT_OUTPUT_RESOLUTION`², default 1024*). With `aspect_ratio` set, the output is that ratio's table size.
 - **FR-005-15** References MUST be passed to the pipeline as PIL images in caller order, with alpha preserved. The pipeline itself flattens alpha only for the vision encoder.
 
 ### Transparency
@@ -196,7 +196,7 @@ Tests: `M` = `tests/test_models.py`, `R` = `tests/test_references.py`, `T` = `te
 
 | Requirement | Implementation | Test | Status |
 |-------------|----------------|------|--------|
-| FR-005-01 | `QwenImage21.load` (`QwenImage21Pipeline`, `device_map="balanced"`, `max_memory`, CPU branch, no `.to()`) | M `test_load_cpu_has_no_device_map`, `test_load_cuda_capped`, `test_load_cuda_uncapped`, `test_load_never_calls_to` | ✅ (real load ⏳ AS-14) |
+| FR-005-01 | `QwenImage21.load` (`QwenImage21Pipeline`, `device_map="balanced"`, `max_memory`, CPU branch, no `.to()`) | M `test_load_cpu_has_no_device_map`, `test_load_cuda_capped`, `test_load_cuda_uncapped`, `test_load_never_calls_to` | ✅ (real load verified: AS-14, and again in 006) |
 | FR-005-02 | `models/qwen_image_2512.py` and `negative_defaults` deleted; `Settings.image_model` Literal | T `test_settings_reject_old_model`, `test_prompt_registration` | ✅ |
 | FR-005-03 | Properties on `BaseImageModel` / `QwenImage21`; `server.py` reads them | T `test_list_aspect_ratios_equals_backend`, `test_get_model_info` | ✅ |
 | FR-005-04 | `QwenImage21.ASPECT_RATIOS` | M `test_aspect_ratios_table_and_copy` | ✅ |
@@ -204,12 +204,12 @@ Tests: `M` = `tests/test_models.py`, `R` = `tests/test_references.py`, `T` = `te
 | FR-005-06 | `_resolve_params` | T `test_resolve_defaults`, `test_resolve_env_overrides` | ✅ |
 | FR-005-07 | `_resolve_params` clamps | T `test_resolve_clamps`, `test_generate_clamps` | ✅ |
 | FR-005-08 | `_resolve_params` warnings, `ctx.warning` | T `test_resolve_negative_warning_and_empty_string`, `test_generate_negative_prompt_warns_but_succeeds` | ✅ |
-| FR-005-09 | Seed resolution in both tools; `use_kv_cache` never passed | M `test_generate_t2i_kwargs` (determinism ⏳ AS-15) | ✅ / ⏳ |
+| FR-005-09 | Seed resolution in both tools; `use_kv_cache` never passed | M `test_generate_t2i_kwargs`; determinism verified in the 006 GPU window (byte-identical seed-42 output) | ✅ |
 | FR-005-10 | `generate_image` | T `test_generate_defaults_and_metadata`, `test_generate_transparent_16x9` | ✅ |
 | FR-005-11 | `edit_image` | T `test_edit_mixed_references`, `test_edit_rejected_when_backend_cannot_edit` | ✅ |
 | FR-005-12 | `storage/references.py` `resolve_references`, `decode_base64_image` | R `test_resolve_order_and_ids`, `test_decode_allowed_formats`, `test_decode_data_uri_prefix_and_whitespace` | ✅ |
 | FR-005-13 | `resolve_references` (runs before the lock and the model); pixel limit checked explicitly (also in Pillow's warn-only 1x–2x band) | R `test_resolve_*`, `test_decode_*` incl. `test_decode_between_1x_and_2x_pixel_limit`; T `test_edit_bad_references_never_call_model`, `test_edit_gif_and_oversize_rejected`. The AS-7 "25 MB" case is exercised with tiny limits (`MAX_REFERENCE_IMAGE_MB=0` / 100 bytes), not a real 25 MB file | ✅ |
-| FR-005-14 | `edit_image` size logic; backend `output_resolution=2048` | M `test_generate_edit_kwargs`; T `test_edit_with_aspect_ratio_override` (visual ⏳ AS-15) | ✅ / ⏳ |
+| FR-005-14 | `edit_image` size logic; backend `output_resolution` (2048 here, **superseded by 006: `EDIT_OUTPUT_RESOLUTION`, default 1024**) | M `test_generate_edit_kwargs`; T `test_edit_with_aspect_ratio_override`; visual check by the 006 A/B test (research R-1) | ✅ (via 006) |
 | FR-005-15 | `resolve_references` keeps PIL images and alpha; backend passes `image=list(...)` | M `test_generate_edit_kwargs`; R `test_decode_preserves_alpha`, `test_resolve_order_and_ids` | ✅ |
 | FR-005-16 | `QwenImage21._wrap_transparent`, `.convert("RGBA")` | M `test_generate_transparent_wraps_prompt_and_returns_rgba`, `test_transparent_prompt_keeps_terminal_punctuation` | ✅ |
 | FR-005-17 | `.convert("RGB")` in `QwenImage21.generate` | M `test_generate_rgb_conversion`; T `test_generate_defaults_and_metadata` | ✅ |
@@ -223,7 +223,7 @@ Tests: `M` = `tests/test_models.py`, `R` = `tests/test_references.py`, `T` = `te
 | FR-005-25 | `pyproject.toml`, `docker/Dockerfile` | Container build; `from diffusers import QwenImage21Pipeline` (see research R-2) | ✅ |
 | FR-005-26 | `.env.example`, Dockerfile, compose, README, AGENTS.md | Review (`grep 2512`) | ✅ |
 | NFR-005-01 | `_generation_lock` in `_run_generation` | T `test_generation_calls_are_serialized` | ✅ |
-| NFR-005-02 | README, AGENTS.md, `.env.example`, backend docstring and log messages | Review; measured use ⏳ AS-15 | ✅ docs / ⏳ measurement |
+| NFR-005-02 | README, AGENTS.md, `.env.example`, backend docstring and log messages | Review; measured in AS-15 (~68 GB 2K generate) and 006 (~49 GB edit at 1024) | ✅ (running alongside vLLM is still open as F-2) |
 | NFR-005-03 | All new logic is unit-tested without a GPU | 77 tests in the Docker image | ✅ |
 | NFR-005-04 | Tool docstrings | T `test_tool_docstrings_cover_contract` | ✅ |
 | NFR-005-05 | Tool docstrings | T `test_tool_docstrings_cover_contract` | ✅ |
@@ -233,5 +233,5 @@ Tests: `M` = `tests/test_models.py`, `R` = `tests/test_references.py`, `T` = `te
 
 ### Findings from the GPU smoke test
 
-- **F-1 (edit quality)** The 2K edit output shows strong over-sharpening and saturation artifacts that the source image doesn't have. The leading hypothesis is `output_resolution=2048` (P-7). The pipeline default is 1024, which also sets the resize of the condition images. Suggested follow-up: an A/B test of the same edit at `output_resolution=1024`. If 1024 is clean, change `EDIT_OUTPUT_RESOLUTION` (or make it configurable) and revisit P-7.
+- **F-1 (edit quality)** The 2K edit output shows strong over-sharpening and saturation artifacts that the source image doesn't have. The leading hypothesis is `output_resolution=2048` (P-7). The pipeline default is 1024, which also sets the resize of the condition images. Suggested follow-up: an A/B test of the same edit at `output_resolution=1024`. If 1024 is clean, change `EDIT_OUTPUT_RESOLUTION` (or make it configurable) and revisit P-7. **Resolved by 006:** the A/B test found `output_resolution=1024` clean, and it is now the default.
 - **F-2 (memory)** The measured peak (~68–76 GB) is well above the planning estimate (38–45 GB). This confirms M-1: vLLM at 0.6 (~73 GB) can't run at the same time.

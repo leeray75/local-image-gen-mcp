@@ -67,6 +67,13 @@ A container image and compose files that start the server with GPU access. They 
 | FR-002-06 | Python socket check in the Dockerfile and compose | ✅ |
 | FR-002-07 | `restart: no` | ✅ |
 | FR-002-08 | `docker/docker-compose.override.yml` | ✅ |
-| AS-1–6 | manual | ⏳ |
+| AS-1 | manual (006 GPU window, 2026-10-18) | ✅ healthy 212 s after start (cold) |
+| AS-2 | manual | ✅ status `starting` during the model load |
+| AS-3 | manual | ✅ after `compose down && up`, all 16 PNGs were still on `image-outputs`; HF cache unchanged at 31 GB; no download log lines |
+| AS-4 | manual | ✅ HTTP 200 `initialize` from a throwaway container on `ai-litellm-proxy_ai-bridge`. **Required fix F-3 (006 FR-006-14):** the override referenced a network `ai-bridge` that doesn't exist. |
+| AS-5 | manual | ✅ after `kill 1`: `exited`, exit 0, 0 restarts, policy `no` |
+| AS-6 | manual | ✅ 0 token matches in `docker history --no-trunc` / `docker image inspect` |
+
+> **F-3 (found 2026-10-18 in 006):** the LiteLLM stack creates its network as `ai-litellm-proxy_ai-bridge`, so `docker-compose.override.yml` now sets `name: ${AI_BRIDGE_NETWORK:-ai-litellm-proxy_ai-bridge}`.
 
 > Dependency versions are duplicated between `docker/Dockerfile` and `pyproject.toml`. Changing one requires changing the other.

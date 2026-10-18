@@ -17,4 +17,4 @@
   *(depends T001)* → FR-002-03–07, 09
 - [x] **T003** `docker/docker-compose.override.yml`: external `ai-bridge` network. *(depends T002)* → FR-002-08
 - [x] **T004** README Docker quick start (both compose invocations; verifying with `docker ps` and `curl`).
-- [ ] **T005** Manual acceptance run of AS-1 to AS-6 on the DGX Spark, with the results recorded in the CHANGELOG. → ⏳
+- [x] **T005** Manual acceptance run of AS-1 to AS-6 on the DGX Spark, with the results recorded in the CHANGELOG. *(Done 2026-10-18 in the 006 GPU window. All pass after fix F-3; see the traceability table.)*

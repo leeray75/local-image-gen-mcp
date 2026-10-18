@@ -4,7 +4,7 @@ This document lists only what changes from the [001 contract](../../001-image-ge
 - defaults and output sizes change
 - `negative_defaults` is removed
 
-> The release version is decided when the release is cut; `pyproject.toml` says 1.0.0, which conflicts with the changelog's 0.x history, so "0.2.0" above is indicative only.
+> The release is **0.2.0** (set in feature 006: `pyproject.toml` and the CHANGELOG `[0.2.0]` section). The `v0.2.0` tag is created at merge time.
 
 The server `instructions` MUST also mention `edit_image` and the `transparent` flag.
 
@@ -30,7 +30,7 @@ The server `instructions` MUST also mention `edit_image` and the `transparent` f
 |-------|------|---------|-------|
 | `prompt` | string | required | The edit instruction. It can refer to "Picture 1…N" by position. |
 | `images` | string[] (1–10) | required | An ordered list. Each entry is either a store `image_id` (a UUID from `generate_image`/`edit_image`/`images://list`) or a base64 PNG/JPEG/WebP, optionally with a `data:` URI prefix. Each one is ≤ `MAX_REFERENCE_IMAGE_MB` once decoded. |
-| `aspect_ratio` | Ratio \| null | `null` | `null` means the last reference's aspect ratio at about 2048² area. Otherwise the 2K table size. |
+| `aspect_ratio` | Ratio \| null | `null` | `null` means the last reference's aspect ratio at about `EDIT_OUTPUT_RESOLUTION`² area (default 1024 since feature 006; originally 2048). Otherwise the 2K table size. |
 | `transparent` | boolean | `false` | e.g. extract a subject onto a transparent background |
 | `negative_prompt`, `num_inference_steps`, `cfg_scale`, `seed` | | | as for `generate_image` |
 

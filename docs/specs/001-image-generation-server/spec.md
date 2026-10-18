@@ -122,13 +122,13 @@ An MCP server that exposes local text-to-image generation as tools, resources an
 | FR-001-01, 02 | `server.py` `generate_image`; `config/aspect_ratios.py` | — | ✅ (no test) |
 | FR-001-03 | `server.py` clamp | — | ✅ (no test) |
 | FR-001-04 | `server.py` | — | ⚠️ no clamp or validation (closed by 005 FR-005-07) |
-| FR-001-05 | `server.py` seed resolution; `qwen_image_2512.generate` Generator | `test_models::test_load_and_generate` (seed echo only) | ✅ / ⏳ determinism unverified |
+| FR-001-05 | `server.py` seed resolution; `qwen_image_2512.generate` Generator | `test_models::test_load_and_generate` (seed echo only) | ✅ — determinism verified on GPU 2026-10-18 (006): two seed-42 runs were byte-identical (sha256 match) |
 | FR-001-06 | `DEFAULT_NEGATIVE_PROMPT` default | `test_default_negative_prompt_not_empty` | ✅ |
 | FR-001-07 | `ctx.report_progress`, `ctx.info` | — | ✅ |
 | FR-001-08, 09 | `list_aspect_ratios`, `get_model_info` | — | ✅ (no test) |
 | FR-001-10 | `storage/image_store.py` | — | ⚠️ docstring wrongly says the index is rebuilt from disk |
 | FR-001-11, 12 | resources in `server.py`; `ImageStore.get*` | — | ✅ (no test) |
-| FR-001-13 | `FastMCP(..., host, port, json_response=True)` | — | ⚠️ `MCP_PATH` not passed through |
+| FR-001-13 | `FastMCP(..., host, port, streamable_http_path, json_response=True)` | `test_streamable_http_path_follows_settings` | ✅ (closed by 006) |
 | FR-001-14, 15 | `_startup_load_model()`, `get_model()` | — | ✅ (v0.1.1) |
 | FR-001-16 | `photorealistic`, `negative_defaults` | — | ✅ |
 | FR-001-17 | `models/base.py`, `models/__init__.py`, `Settings.image_model` Literal | `test_is_loaded_before_load`, `test_model_name` | ✅ |

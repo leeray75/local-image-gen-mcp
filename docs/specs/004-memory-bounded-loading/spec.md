@@ -71,6 +71,6 @@ These come from the code comments and are estimates, not benchmarks. Re-measure 
 | FR-004-01–04, 07 | `QwenImage21.load`, `memory_limit_gb` | `test_models::test_load_*` | ✅ |
 | FR-004-05 | `Settings.image_gpu_memory_limit` (005 FR-005-24) | `test_settings_memory_limit_reaches_backend` | ✅ |
 | FR-004-06 | `docker-compose.yml` env; `limits.memory` removed | — | ✅ |
-| AS-1 | manual on DGX Spark | — | ⏳ |
+| AS-1 | manual on DGX Spark | — | Obsolete (006 FR-006-09): vLLM can't run at the same time (005 M-1); the measured footprint is recorded in 005/006 |
 
 > The v0.1.1 CHANGELOG entry and `reports/bugfix-v0.1.1-summary.md` say `device_map="cuda"`. That was accurate for v0.1.1. The `[Unreleased]` CHANGELOG entry records the change to `"balanced"`.

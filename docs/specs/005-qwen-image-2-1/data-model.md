@@ -47,7 +47,7 @@ The existing members are unchanged: `load`, `unload`, `generate`, `is_loaded`, `
 
 - `MODEL_ID = "Qwen/Qwen-Image-2.1"`, `model_name = "Qwen-Image-2.1"`
 - `__init__(torch_dtype_str="bfloat16", memory_limit_gb: int | None = None)`
-- `EDIT_OUTPUT_RESOLUTION = 2048`
+- `EDIT_OUTPUT_RESOLUTION = 2048` *(superseded by 006: now the `edit_output_resolution` constructor argument, default 1024)*
 - `TRANSPARENT_PROMPT = "This is an RGBA image with transparency. {prompt} The image has alpha channel and the background is transparent."`
 
 ## StoredImage  (`storage/image_store.py`)
