@@ -27,9 +27,9 @@ Environment variables (all read from environment, never hardcoded):
   MCP_HOST              Host to bind to (default: 0.0.0.0)
   MCP_PORT              Port to bind to (default: 8500)
   MCP_PATH              URL path (default: /mcp)
-  IMAGE_MODEL           Backend model id (default: qwen_image_2_1)
+  IMAGE_MODEL           Backend model id (default: qwen_image_2_1_turbo)
   IMAGE_OUTPUT_DIR      Directory to save generated images (default: /outputs)
-  MAX_INFERENCE_STEPS   Optional override of the backend's default steps (clamped 20-100)
+  MAX_INFERENCE_STEPS   Optional override of the backend's default steps (clamped to the backend's range; Turbo is fixed at 8)
   DEFAULT_CFG_SCALE     Optional override of the backend's default CFG (clamped 1.0-10.0)
   IMAGE_GPU_MEMORY_LIMIT  Optional device-memory cap in GB (accelerate max_memory)
   MAX_REFERENCE_IMAGE_MB  Max decoded size of one edit reference (default: 20)
@@ -58,7 +58,6 @@ log = logging.getLogger(__name__)
 
 Ratio = Literal["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"]
 
-MIN_STEPS, MAX_STEPS = 20, 100
 MIN_CFG, MAX_CFG = 1.0, 10.0
 
 
@@ -111,7 +110,7 @@ mcp = FastMCP(
         "by image_id. "
         "Use list_aspect_ratios to see the output dimensions (about "
         "GENERATE_OUTPUT_RESOLUTION squared in area, default 1024). "
-        "Use get_model_info to check GPU status, defaults and capabilities. "
+        "Use get_model_info to check GPU status, defaults, step range and capabilities. "
         "Previously generated images can be retrieved via the image://{image_id} "
         "resource URI without re-generating them."
     ),
@@ -134,15 +133,24 @@ def _resolve_params(
     """Resolve steps, CFG and negative prompt (FR-005-06..08).
 
     Precedence: tool argument > env override (settings) > backend default.
-    Steps are clamped to [20, 100] and CFG to [1.0, 10.0]. Returns
+    Steps are clamped to the backend's range (min/max_inference_steps; spec 009
+    FR-009-02) and CFG to [1.0, 10.0]. Returns
     (steps, cfg, negative_prompt, warnings).
     """
+    warnings: list[str] = []
+    lo, hi = model.min_inference_steps, model.max_inference_steps
     steps = num_inference_steps
     if steps is None:
         steps = settings.max_inference_steps
+    requested = steps
     if steps is None:
         steps = model.default_inference_steps
-    steps = max(MIN_STEPS, min(MAX_STEPS, int(steps)))
+    steps = max(lo, min(hi, int(steps)))
+    if lo == hi and requested is not None and int(requested) != steps:
+        warnings.append(
+            f"{model.model_name} uses a fixed {steps}-step schedule; "
+            f"num_inference_steps={int(requested)} was ignored."
+        )
 
     cfg = cfg_scale
     if cfg is None:
@@ -155,7 +163,6 @@ def _resolve_params(
     if neg is None:
         neg = model.default_negative_prompt
 
-    warnings: list[str] = []
     if neg and cfg <= 1.0:
         warnings.append(
             "negative_prompt is ignored unless cfg_scale > 1 "
@@ -252,7 +259,7 @@ async def generate_image(
     it. Output is about GENERATE_OUTPUT_RESOLUTION^2 pixels of area (default 1024,
     so 1:1 = 1024x1024; see list_aspect_ratios for the exact sizes).
 
-    Guidance is OFF by default (cfg_scale=1.0, 40 steps). That is the model's
+    Guidance is OFF by default (cfg_scale=1.0). That is the model's
     tuned setting and the fastest. negative_prompt only takes effect when
     cfg_scale > 1 (roughly doubles the compute); otherwise it is ignored and a
     warning is sent.
@@ -267,7 +274,10 @@ async def generate_image(
         transparent:          true = RGBA output with a real alpha channel
                               (stickers, icons, cut-outs). false = opaque RGB.
         negative_prompt:      What to exclude. Default none. Needs cfg_scale > 1.
-        num_inference_steps:  Range 20-100 (clamped). Default 40.
+        num_inference_steps:  Clamped to the backend's range; default is the
+                              backend's (40 for Qwen-Image-2.1, range 20-100;
+                              a fixed 8 for Turbo, where other values are
+                              ignored with a warning). See get_model_info.
         cfg_scale:            Range 1.0-10.0 (clamped). Default 1.0 (guidance off).
         seed:                 Reproducibility seed. None = random.
     """
@@ -356,7 +366,7 @@ async def edit_image(
     set, the result uses that ratio's size at the same EDIT_OUTPUT_RESOLUTION
     (not the generate_image size table).
 
-    Guidance is OFF by default (cfg_scale=1.0, 40 steps). negative_prompt only
+    Guidance is OFF by default (cfg_scale=1.0). negative_prompt only
     takes effect when cfg_scale > 1; otherwise it is ignored and a warning is
     sent. Editing at a high EDIT_OUTPUT_RESOLUTION with many references needs a lot of memory; the server
     runs one generation at a time.
@@ -369,7 +379,10 @@ async def edit_image(
         transparent:          true = RGBA output (e.g. extract a subject onto a
                               transparent background). false = opaque RGB.
         negative_prompt:      What to exclude. Default none. Needs cfg_scale > 1.
-        num_inference_steps:  Range 20-100 (clamped). Default 40.
+        num_inference_steps:  Clamped to the backend's range; default is the
+                              backend's (40 for Qwen-Image-2.1, range 20-100;
+                              a fixed 8 for Turbo, where other values are
+                              ignored with a warning). See get_model_info.
         cfg_scale:            Range 1.0-10.0 (clamped). Default 1.0 (guidance off).
         seed:                 Reproducibility seed. None = random.
     """
@@ -463,7 +476,9 @@ def get_model_info() -> dict:
     """
     Return model metadata, capabilities, resolved defaults and GPU memory status.
 
-    Reports max_reference_images, supports_editing, supports_transparency,
+    Reports model_name and model_id (the checkpoint), the supported step range
+    (min_inference_steps / max_inference_steps; Qwen-Image-2.1-Turbo is fixed at
+    8 steps), max_reference_images, supports_editing, supports_transparency,
     edit_output_resolution (the edit size target as a side length in pixels;
     null if editing is unsupported), generate_output_resolution (the same for
     generate_image), max_output_resolution (the configured ceiling for both)
@@ -489,11 +504,14 @@ def get_model_info() -> dict:
 
     return {
         "model_name": model.model_name,
+        "model_id": model.model_id,
         "backend": settings.image_model,
         "is_loaded": model.is_loaded(),
         "device": device,
         "torch_dtype": settings.torch_dtype,
         "default_inference_steps": steps,
+        "min_inference_steps": model.min_inference_steps,
+        "max_inference_steps": model.max_inference_steps,
         "default_cfg_scale": cfg,
         "has_default_negative_prompt": neg is not None,
         "max_reference_images": model.max_reference_images,

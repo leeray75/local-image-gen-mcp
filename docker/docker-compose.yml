@@ -18,7 +18,7 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN}
       HF_HOME: /root/.cache/huggingface
-      IMAGE_MODEL: qwen_image_2_1
+      IMAGE_MODEL: ${IMAGE_MODEL:-qwen_image_2_1_turbo}
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8500"
       IMAGE_OUTPUT_DIR: /outputs

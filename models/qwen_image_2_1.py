@@ -46,7 +46,14 @@ log = logging.getLogger(__name__)
 class QwenImage21(BaseImageModel):
     """Qwen-Image-2.1 backend (text-to-image, editing, RGBA)."""
 
-    MODEL_ID = "Qwen/Qwen-Image-2.1"
+    # variant -> (checkpoint, model_name, default steps, min steps, max steps).
+    # Turbo's checkpoint carries `sample_sigmas` (8 values), which the pipeline
+    # uses in place of num_inference_steps (spec 009 research R-1), so its range
+    # is fixed at 8.
+    VARIANTS: dict[str, tuple[str, str, int, int, int]] = {
+        "base": ("Qwen/Qwen-Image-2.1", "Qwen-Image-2.1", 40, 20, 100),
+        "turbo": ("Qwen/Qwen-Image-2.1-Turbo", "Qwen-Image-2.1-Turbo", 8, 8, 8),
+    }
 
     # Official 2K sizes from the model card (used as-is at resolution 2048)
     CARD_SIZES_2048: dict[str, tuple[int, int]] = {
@@ -90,7 +97,14 @@ class QwenImage21(BaseImageModel):
         generate_output_resolution: int = 1024,
         quantize_transformer: str = "auto",
         quantize_text_encoder: str = "auto",
+        variant: str = "base",
     ) -> None:
+        if variant not in self.VARIANTS:
+            raise ValueError(
+                f"variant={variant!r} is invalid; must be one of {tuple(self.VARIANTS)}"
+            )
+        (self._model_id, self._model_name, self._default_steps,
+         self._min_steps, self._max_steps) = self.VARIANTS[variant]
         for name, mode in (
             ("quantize_transformer", quantize_transformer),
             ("quantize_text_encoder", quantize_text_encoder),
@@ -169,7 +183,7 @@ class QwenImage21(BaseImageModel):
 
         def fail(err: Exception) -> RuntimeError:
             return RuntimeError(
-                "Failed to load Qwen-Image-2.1 with quantization "
+                f"Failed to load {self._model_name} with quantization "
                 f"(transformer={self._quantize_transformer}, "
                 f"text_encoder={self._quantize_text_encoder}) "
                 f"while loading {stage}: {type(err).__name__}: {err}"
@@ -185,13 +199,13 @@ class QwenImage21(BaseImageModel):
                 kw = {"subfolder": name, "dtype": self._torch_dtype, "device_map": device_map}
                 if name in mapping:
                     kw["quantization_config"] = mapping[name]
-                loaded[name] = cls.from_pretrained(self.MODEL_ID, **kw)
+                loaded[name] = cls.from_pretrained(self._model_id, **kw)
                 self._free_memory()
                 self._log_memory(stage)
 
             stage = "pipeline (remaining components)"
             pipeline = QwenImage21Pipeline.from_pretrained(
-                self.MODEL_ID,
+                self._model_id,
                 transformer=loaded["transformer"],
                 text_encoder=loaded["text_encoder"],
                 dtype=self._torch_dtype,
@@ -350,7 +364,7 @@ class QwenImage21(BaseImageModel):
             quantization_config = self._build_quantization_config()
         except Exception as err:
             raise RuntimeError(
-                "Failed to load Qwen-Image-2.1 with quantization "
+                f"Failed to load {self._model_name} with quantization "
                 f"(transformer={self._quantize_transformer}, "
                 f"text_encoder={self._quantize_text_encoder}): "
                 f"{type(err).__name__}: {err}"
@@ -362,7 +376,7 @@ class QwenImage21(BaseImageModel):
                 "Generation will be extremely slow."
             )
             self._pipeline = QwenImage21Pipeline.from_pretrained(
-                self.MODEL_ID,
+                self._model_id,
                 torch_dtype=self._torch_dtype,
             )
             log.info("Model loaded on CPU")
@@ -380,7 +394,7 @@ class QwenImage21(BaseImageModel):
             }
             log.info(
                 "Loading %s with %dGB GPU memory cap (dtype=%s)...",
-                self.MODEL_ID,
+                self._model_id,
                 self._memory_limit_gb,
                 self._torch_dtype,
             )
@@ -393,7 +407,7 @@ class QwenImage21(BaseImageModel):
         else:
             log.info(
                 "Loading %s on %s (dtype=%s, no memory cap)...",
-                self.MODEL_ID,
+                self._model_id,
                 self._device,
                 self._torch_dtype,
             )
@@ -417,7 +431,7 @@ class QwenImage21(BaseImageModel):
             self._pipeline = self._load_staged(quantization_config)
         else:
             self._pipeline = QwenImage21Pipeline.from_pretrained(
-                self.MODEL_ID,
+                self._model_id,
                 **kwargs,
             )
 
@@ -464,7 +478,7 @@ class QwenImage21(BaseImageModel):
         """
         if self._pipeline is None:
             raise RuntimeError(
-                f"Model {self.MODEL_ID} is not loaded. Call load() first."
+                f"Model {self._model_id} is not loaded. Call load() first."
             )
 
         t_start = time.perf_counter()
@@ -528,7 +542,12 @@ class QwenImage21(BaseImageModel):
     @property
     def model_name(self) -> str:
         """Human-readable model identifier."""
-        return "Qwen-Image-2.1"
+        return self._model_name
+
+    @property
+    def model_id(self) -> str:
+        """The Hugging Face checkpoint this backend loads."""
+        return self._model_id
 
     def sizes_for(self, resolution: int) -> dict[str, tuple[int, int]]:
         """Size table for a target side length.
@@ -554,7 +573,15 @@ class QwenImage21(BaseImageModel):
 
     @property
     def default_inference_steps(self) -> int:
-        return 40
+        return self._default_steps
+
+    @property
+    def min_inference_steps(self) -> int:
+        return self._min_steps
+
+    @property
+    def max_inference_steps(self) -> int:
+        return self._max_steps
 
     @property
     def default_cfg_scale(self) -> float:

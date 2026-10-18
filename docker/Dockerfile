@@ -37,6 +37,6 @@ ENV MCP_PORT=8500
 ENV MCP_PATH=/mcp
 ENV IMAGE_OUTPUT_DIR=/outputs
 ENV TORCH_DTYPE=bfloat16
-ENV IMAGE_MODEL=qwen_image_2_1
+ENV IMAGE_MODEL=qwen_image_2_1_turbo
 
 CMD ["python", "server.py"]
