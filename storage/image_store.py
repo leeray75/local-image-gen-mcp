@@ -3,8 +3,9 @@
 import logging
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from PIL import Image as PILModule
 from PIL.Image import Image as PILImage
 
 from config.settings import settings
@@ -17,22 +18,27 @@ class StoredImage:
     """Metadata for a stored generated image."""
     image_id: str
     prompt: str
-    negative_prompt: str
-    aspect_ratio: str
+    negative_prompt: str          # "" when there was none
+    aspect_ratio: str             # ratio key, or "input" for an edit sized from its reference
     width: int
     height: int
     seed: int
     generation_time: float
     model_name: str
     disk_path: Path
+    mode: str = "generate"                 # "generate" | "edit"
+    transparent: bool = False
+    reference_image_ids: list[str] = field(default_factory=list)  # store IDs, caller order
+    reference_count: int = 0               # all references, including base64 uploads
 
 
 class ImageStore:
     """Thread-safe in-memory image store with disk persistence.
 
     Images are saved to disk as PNG and metadata is kept in-memory
-    for fast retrieval. The in-memory store is rebuilt from disk
-    on restart if needed.
+    for fast retrieval. The in-memory index is NOT rebuilt from disk on
+    restart: PNGs persist on the volume, but only images created by the
+    current process are known to the store.
     """
 
     def __init__(self, output_dir: Path) -> None:
@@ -47,7 +53,7 @@ class ImageStore:
         filename = f"{image_id}.png"
         disk_path = self._output_dir / filename
 
-        # Save to disk
+        # Save to disk (in the image's own mode, RGB or RGBA)
         image.save(disk_path, format="PNG")
 
         stored = StoredImage(
@@ -61,6 +67,10 @@ class ImageStore:
             generation_time=metadata.get("generation_time", 0.0),
             model_name=metadata.get("model_name", ""),
             disk_path=disk_path,
+            mode=metadata.get("mode", "generate"),
+            transparent=metadata.get("transparent", False),
+            reference_image_ids=list(metadata.get("reference_image_ids", [])),
+            reference_count=metadata.get("reference_count", 0),
         )
 
         with self._lock:
@@ -89,6 +99,21 @@ class ImageStore:
                 "The output directory may have been cleared."
             )
         return stored.disk_path.read_bytes()
+
+    def load_image(self, image_id: str) -> PILImage:
+        """Open a stored PNG as a fully loaded (non-lazy) PIL image.
+
+        Raises the same KeyError / FileNotFoundError as get_image_bytes.
+        """
+        stored = self.get(image_id)
+        if not stored.disk_path.exists():
+            raise FileNotFoundError(
+                f"Image file for '{image_id}' not found at {stored.disk_path}. "
+                "The output directory may have been cleared."
+            )
+        with PILModule.open(stored.disk_path) as img:
+            img.load()
+            return img.copy()
 
     def list_all(self) -> list[StoredImage]:
         """Return all stored images sorted by newest first (insertion order reversed)."""

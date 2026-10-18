@@ -4,12 +4,12 @@ version = "1.0.0"
 description = "Model-agnostic MCP server for local text-to-image generation"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.27.0",
+    "mcp[cli]>=1.27.0,<2",
     "pydantic>=2.11.0",
     "pydantic-settings>=2.7.0",
-    "diffusers>=0.33.0",
+    "diffusers>=0.41.0",
     "torch>=2.7.0",
-    "transformers>=4.52.0",
+    "transformers>=5.17",
     "accelerate>=1.7.0",
     "safetensors>=0.5.3",
     "pillow>=11.2.1",

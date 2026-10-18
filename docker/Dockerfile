@@ -11,11 +11,11 @@ COPY storage/ ./storage/
 
 # Install dependencies directly to system Python to use NVIDIA's optimized torch/CUDA
 RUN PIP_CONSTRAINT="" pip install --no-cache-dir \
-    "mcp[cli]>=1.27.0" \
+    "mcp[cli]>=1.27.0,<2" \
     "pydantic>=2.11.0" \
     "pydantic-settings>=2.7.0" \
-    "diffusers>=0.33.0" \
-    "transformers>=4.52.0" \
+    "diffusers>=0.41.0" \
+    "transformers>=5.17" \
     "accelerate>=1.7.0" \
     "safetensors>=0.5.3" \
     "pillow==11.1.0" \
@@ -34,9 +34,7 @@ ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8500
 ENV MCP_PATH=/mcp
 ENV IMAGE_OUTPUT_DIR=/outputs
-ENV MAX_INFERENCE_STEPS=50
-ENV DEFAULT_CFG_SCALE=4.0
 ENV TORCH_DTYPE=bfloat16
-ENV IMAGE_MODEL=qwen_image_2512
+ENV IMAGE_MODEL=qwen_image_2_1
 
 CMD ["python", "server.py"]
