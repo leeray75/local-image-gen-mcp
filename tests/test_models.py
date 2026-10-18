@@ -134,7 +134,7 @@ def test_load_cuda_capped(MockPipeline):
     with patch("torch.cuda.is_available", return_value=True), \
          patch("torch.cuda.memory_allocated", return_value=0), \
          patch("torch.cuda.memory_reserved", return_value=0):
-        QwenImage21(memory_limit_gb=30).load()
+        QwenImage21(memory_limit_gb=30, quantize_transformer="none", quantize_text_encoder="none").load()
     args, kwargs = MockPipeline.from_pretrained.call_args
     assert args[0] == "Qwen/Qwen-Image-2.1"
     assert kwargs["device_map"] == "balanced"
@@ -146,7 +146,7 @@ def test_load_cuda_uncapped(MockPipeline):
     with patch("torch.cuda.is_available", return_value=True), \
          patch("torch.cuda.memory_allocated", return_value=0), \
          patch("torch.cuda.memory_reserved", return_value=0):
-        QwenImage21().load()
+        QwenImage21(quantize_transformer="none", quantize_text_encoder="none").load()
     kwargs = MockPipeline.from_pretrained.call_args.kwargs
     assert kwargs["device_map"] == "balanced"
     assert "max_memory" not in kwargs
@@ -155,7 +155,7 @@ def test_load_cuda_uncapped(MockPipeline):
 def test_load_never_calls_to(mock_pipeline):
     with patch("models.qwen_image_2_1.QwenImage21Pipeline") as MockPipeline:
         MockPipeline.from_pretrained.return_value = mock_pipeline
-        QwenImage21().load()
+        QwenImage21(quantize_transformer="none", quantize_text_encoder="none").load()
     mock_pipeline.to.assert_not_called()
 
 
@@ -242,3 +242,358 @@ def test_edit_output_resolution_reaches_pipeline_for_edits_only():  # 006 AS-1
         assert pipe.call_args.kwargs["output_resolution"] == 1024
         model.generate(_req())
         assert "output_resolution" not in pipe.call_args.kwargs
+
+
+# ── 008: load-time weight quantization ────────────────────────────────────────
+
+def _load_cuda(model_kwargs=None, pipeline=None):
+    """Load a QwenImage21 on a faked CUDA device; returns (model, MockPipeline).
+
+    The staged loaders are patched too and hang off the returned mock:
+    MockPipeline.order is a manager recording every call in order
+    (transformer, text_encoder, free, pipeline).
+    """
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline") as MockPipeline, \
+         patch("models.qwen_image_2_1.QwenImage21Transformer2DModel") as MockTr, \
+         patch("models.qwen_image_2_1.Qwen3VLForConditionalGeneration") as MockTe, \
+         patch("models.qwen_image_2_1.gc.collect") as mock_gc, \
+         patch("torch.cuda.empty_cache") as mock_empty, \
+         patch("torch.cuda.is_available", return_value=True), \
+         patch("torch.cuda.memory_allocated", return_value=0), \
+         patch("torch.cuda.memory_reserved", return_value=0):
+        order = MagicMock()
+        order.attach_mock(MockTr.from_pretrained, "transformer")
+        order.attach_mock(MockTe.from_pretrained, "text_encoder")
+        order.attach_mock(mock_gc, "gc")
+        order.attach_mock(mock_empty, "empty_cache")
+        order.attach_mock(MockPipeline.from_pretrained, "pipeline")
+        MockPipeline.from_pretrained.return_value = pipeline or MagicMock()
+        MockPipeline.order = order
+        MockPipeline.tr, MockPipeline.te = MockTr, MockTe
+        model = QwenImage21(**(model_kwargs or {}))
+        model.load()
+    return model, MockPipeline
+
+
+def test_quantization_default_passes_no_config():  # 008 AS-1
+    m = QwenImage21()
+    assert m._build_quantization_config() is None
+    _, MockPipeline = _load_cuda({"quantize_transformer": "none", "quantize_text_encoder": "none"})
+    assert "quantization_config" not in MockPipeline.from_pretrained.call_args.kwargs
+    # AS-5b: the none/none path is the single pipeline call, as before
+    MockPipeline.tr.from_pretrained.assert_not_called()
+    MockPipeline.te.from_pretrained.assert_not_called()
+    kwargs = MockPipeline.from_pretrained.call_args.kwargs
+    assert kwargs["device_map"] == "balanced" and "transformer" not in kwargs
+
+
+def test_quantization_mapping_fp8_int8():  # 008 AS-2
+    import diffusers
+    import transformers
+    from torchao.quantization import Float8WeightOnlyConfig, Int8WeightOnlyConfig
+
+    cfg = QwenImage21(
+        quantize_transformer="fp8", quantize_text_encoder="int8"
+    )._build_quantization_config()
+    assert set(cfg.quant_mapping) == {"transformer", "text_encoder"}  # never the VAE
+    tr, te = cfg.quant_mapping["transformer"], cfg.quant_mapping["text_encoder"]
+    assert type(tr) is diffusers.TorchAoConfig
+    assert isinstance(tr.quant_type, Float8WeightOnlyConfig)
+    assert type(te) is transformers.TorchAoConfig
+    assert isinstance(te.quant_type, Int8WeightOnlyConfig)
+
+
+def test_quantization_mapping_nvfp4_transformer_only():  # 008 AS-3
+    import diffusers
+
+    cfg = QwenImage21(quantize_transformer="nvfp4")._build_quantization_config()
+    assert set(cfg.quant_mapping) == {"transformer"}  # text encoder stays BF16
+    tr = cfg.quant_mapping["transformer"]
+    assert type(tr) is diffusers.NVIDIAModelOptConfig
+    assert tr.quant_type == "NVFP4"
+    assert tr.weight_only is True
+
+
+def test_quantization_mapping_nvfp4_text_encoder_uses_torchao_prototype():
+    import transformers
+    from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
+
+    cfg = QwenImage21(quantize_text_encoder="nvfp4")._build_quantization_config()
+    assert set(cfg.quant_mapping) == {"text_encoder"}
+    te = cfg.quant_mapping["text_encoder"]
+    assert type(te) is transformers.TorchAoConfig
+    assert isinstance(te.quant_type, NVFP4WeightOnlyConfig)
+
+
+@pytest.mark.parametrize("mode", ["int8", "fp8", "nvfp4"])
+def test_quantization_skip_modules_and_fresh_lists(mode):  # 008 FR-008-05
+    m = QwenImage21(quantize_transformer=mode, quantize_text_encoder=mode)
+    cfg = m._build_quantization_config().quant_mapping
+    assert cfg["transformer"].modules_to_not_convert == [
+        "img_in", "txt_in", "time_text_embed", "modulation", "norm_out", "proj_out",
+    ]
+    assert cfg["text_encoder"].modules_to_not_convert == ["model.visual", "lm_head"]
+    # the quantizers extend these lists in place, so they must not be shared
+    cfg["transformer"].modules_to_not_convert.append("x")
+    again = m._build_quantization_config().quant_mapping["transformer"]
+    assert "x" not in again.modules_to_not_convert
+    assert "x" not in m.TRANSFORMER_SKIP_MODULES
+
+
+@pytest.mark.parametrize("cuda", [True, False])
+def test_quantization_build_error_names_modes(cuda):  # 008 FR-008-04
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline") as MockPipeline, \
+         patch("torch.cuda.is_available", return_value=cuda), \
+         patch.object(QwenImage21, "_torchao_config", side_effect=ImportError("no torchao")):
+        model = QwenImage21(quantize_transformer="fp8", quantize_text_encoder="nvfp4")
+        with pytest.raises(RuntimeError) as exc:
+            model.load()
+    msg = str(exc.value)
+    if cuda:
+        assert "transformer=fp8" in msg and "text_encoder=nvfp4" in msg
+        assert "no torchao" in msg and isinstance(exc.value.__cause__, ImportError)
+    else:  # the CPU guard wins over a missing library
+        assert "needs CUDA" in msg
+    MockPipeline.from_pretrained.assert_not_called()
+
+
+def test_quantization_modelopt_construction_error_names_modes():
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline"), \
+         patch("torch.cuda.is_available", return_value=True), \
+         patch("diffusers.NVIDIAModelOptConfig", side_effect=ImportError("no modelopt")):
+        model = QwenImage21(quantize_transformer="nvfp4", quantize_text_encoder="none")
+        with pytest.raises(RuntimeError, match="transformer=nvfp4.*text_encoder=none.*no modelopt"):
+            model.load()
+
+
+def test_staged_load_order_and_arguments():  # 008 AS-5b, FR-008-10
+    import diffusers
+    import transformers
+    from unittest.mock import call
+
+    pipe = MagicMock()
+    _, P = _load_cuda(
+        {"quantize_transformer": "fp8", "quantize_text_encoder": "int8",
+         "memory_limit_gb": 40},
+        pipeline=pipe,
+    )
+    names = [c[0] for c in P.order.mock_calls if c[0] in
+             ("transformer", "text_encoder", "gc", "empty_cache", "pipeline")]
+    assert names == [
+        "transformer", "gc", "empty_cache",
+        "text_encoder", "gc", "empty_cache",
+        "pipeline",
+    ]
+    tr_kw = P.tr.from_pretrained.call_args.kwargs
+    assert P.tr.from_pretrained.call_args.args == ("Qwen/Qwen-Image-2.1",)
+    assert tr_kw["subfolder"] == "transformer"
+    assert type(tr_kw["quantization_config"]) is diffusers.TorchAoConfig
+    assert tr_kw["device_map"] == {"": 0} and tr_kw["dtype"] == torch.bfloat16
+    te_kw = P.te.from_pretrained.call_args.kwargs
+    assert te_kw["subfolder"] == "text_encoder"
+    assert type(te_kw["quantization_config"]) is transformers.TorchAoConfig
+    assert te_kw["device_map"] == {"": 0}
+    pk = P.from_pretrained.call_args.kwargs
+    assert pk["transformer"] is P.tr.from_pretrained.return_value
+    assert pk["text_encoder"] is P.te.from_pretrained.return_value
+    assert "quantization_config" not in pk and "max_memory" not in pk
+    assert pk["device_map"] == "cuda"
+
+
+def test_staged_load_none_component_loads_bf16():  # 008 FR-008-10
+    _, P = _load_cuda({"quantize_transformer": "nvfp4", "quantize_text_encoder": "none"})
+    assert "quantization_config" in P.tr.from_pretrained.call_args.kwargs
+    te_kw = P.te.from_pretrained.call_args.kwargs
+    assert "quantization_config" not in te_kw  # BF16, same sequence
+    assert te_kw["device_map"] == {"": 0}
+    _, P = _load_cuda({"quantize_transformer": "none", "quantize_text_encoder": "nvfp4"})
+    assert "quantization_config" not in P.tr.from_pretrained.call_args.kwargs
+    assert "quantization_config" in P.te.from_pretrained.call_args.kwargs
+
+
+def test_staged_load_logs_memory_after_each_step(caplog):  # 008 FR-008-12
+    import logging
+    with caplog.at_level(logging.INFO, logger="models.qwen_image_2_1"):
+        with patch.object(QwenImage21, "_host_available_gb", return_value=33.3):
+            _load_cuda({"quantize_transformer": "int8", "quantize_text_encoder": "none"})
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Memory after")]
+    assert [l.split(" — ")[0] for l in lines] == [
+        "Memory after start",
+        "Memory after transformer (int8)",
+        "Memory after text_encoder (none)",
+        "Memory after pipeline (remaining components)",
+    ]
+    assert all("allocated" in l and "reserved" in l and "host available: 33.3 GB" in l
+               for l in lines)
+
+
+def test_host_available_gb_reads_meminfo(tmp_path):
+    from unittest.mock import mock_open
+    data = "MemTotal: 100 kB\nMemAvailable:   2097152 kB\n"
+    with patch("builtins.open", mock_open(read_data=data)):
+        assert QwenImage21._host_available_gb() == 2.0
+    with patch("builtins.open", side_effect=OSError):
+        assert QwenImage21._host_available_gb() is None
+
+
+@pytest.mark.parametrize("failing,expect", [
+    ("transformer", "while loading transformer (nvfp4)"),
+    ("text_encoder", "while loading text_encoder (fp8)"),
+    ("pipeline", "while loading pipeline"),
+])
+def test_staged_load_error_names_component_and_modes(failing, expect):  # 008 AS-5
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline") as P, \
+         patch("models.qwen_image_2_1.QwenImage21Transformer2DModel") as Tr, \
+         patch("models.qwen_image_2_1.Qwen3VLForConditionalGeneration") as Te, \
+         patch("torch.cuda.is_available", return_value=True), \
+         patch("torch.cuda.memory_allocated", return_value=0), \
+         patch("torch.cuda.memory_reserved", return_value=0), \
+         patch("torch.cuda.empty_cache"):
+        {"transformer": Tr, "text_encoder": Te, "pipeline": P}[failing] \
+            .from_pretrained.side_effect = ValueError("kernel not supported")
+        model = QwenImage21(quantize_transformer="nvfp4", quantize_text_encoder="fp8")
+        with pytest.raises(RuntimeError) as exc:
+            model.load()
+    msg = str(exc.value)
+    assert expect in msg
+    assert "transformer=nvfp4" in msg and "text_encoder=fp8" in msg
+    assert "kernel not supported" in msg
+    assert isinstance(exc.value.__cause__, ValueError)
+    assert not model.is_loaded()
+
+
+@pytest.mark.parametrize("field", ["quantize_transformer", "quantize_text_encoder"])
+@patch("models.qwen_image_2_1.QwenImage21Pipeline")
+def test_quantization_on_cpu_fails(MockPipeline, field):  # 008 FR-008-03
+    with patch("torch.cuda.is_available", return_value=False):
+        model = QwenImage21(**{field: "int8"})
+        with pytest.raises(RuntimeError, match="needs CUDA"):
+            model.load()
+    MockPipeline.from_pretrained.assert_not_called()
+    assert not model.is_loaded()
+
+
+def test_quantization_cpu_with_none_still_loads():
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline") as MockPipeline, \
+         patch("torch.cuda.is_available", return_value=False):
+        QwenImage21().load()
+    MockPipeline.from_pretrained.assert_called_once()
+
+
+def test_quantization_invalid_mode_rejected():
+    with pytest.raises(ValueError, match="quantize_text_encoder"):
+        QwenImage21(quantize_text_encoder="bf16")
+
+
+def test_load_error_without_quantization_is_not_wrapped():
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline") as MockPipeline, \
+         patch("torch.cuda.is_available", return_value=True):
+        MockPipeline.from_pretrained.side_effect = ValueError("boom")
+        with pytest.raises(ValueError, match="boom"):
+            QwenImage21(quantize_transformer="none", quantize_text_encoder="none").load()
+
+
+def test_quantization_library_imported_lazily():
+    import importlib
+    src = importlib.util.find_spec("models.qwen_image_2_1").origin
+    text = open(src).read()
+    head = text.split("class QwenImage21")[0]
+    for lib in ("torchao", "modelopt", "NVIDIAModelOptConfig"):
+        assert lib not in head, f"{lib} must be imported inside the helper"
+
+
+def test_quantization_info_and_weight_measurement():  # 008 FR-008-06/07
+    pipe = MagicMock()
+    pipe.transformer = torch.nn.Linear(100, 100, bias=False)  # 10000 x 4 B
+    pipe.text_encoder = torch.nn.Linear(10, 10, bias=False).to(torch.bfloat16)
+    pipe.vae = torch.nn.Linear(1, 1, bias=False)
+    model, _ = _load_cuda({"quantize_transformer": "int8", "quantize_text_encoder": "none"}, pipeline=pipe)
+    info = model.quantization_info
+    assert info["quantize_transformer"] == "int8"
+    assert info["quantize_text_encoder"] == "none"
+    assert info["weight_memory_gb"] == {"transformer": 0.0, "text_encoder": 0.0, "vae": 0.0}
+    assert QwenImage21._module_gb(pipe.transformer) == round(40000 / 1e9, 2)
+    model.unload()
+    assert model.quantization_info["weight_memory_gb"] is None
+
+
+def test_tensor_nbytes_counts_inner_tensors_of_subclasses():
+    class Packed:  # stands in for a torchao tensor subclass
+        def __init__(self):
+            self.qdata = torch.zeros(10, dtype=torch.int8)
+            self.scale = torch.zeros(2, dtype=torch.float32)
+
+        def __tensor_flatten__(self):
+            return ["qdata", "scale"], None
+
+    assert QwenImage21._tensor_nbytes(Packed()) == 10 + 8
+    assert QwenImage21._tensor_nbytes(torch.zeros(3, dtype=torch.bfloat16)) == 6
+
+
+def test_quantization_info_default_on_base_class():
+    from models.base import BaseImageModel
+    assert BaseImageModel.quantization_info.fget(object()) == {}
+
+
+@pytest.mark.parametrize("tr,te,expected", [
+    ("nvfp4", "none", True), ("none", "nvfp4", True), ("nvfp4", "nvfp4", True),
+    ("fp8", "int8", False), ("none", "none", False),
+])
+def test_nvfp4_logs_startup_warning(caplog, tr, te, expected):  # 008 FR-008-14
+    import logging
+    with caplog.at_level(logging.WARNING, logger="models.qwen_image_2_1"):
+        model, _ = _load_cuda({"quantize_transformer": tr, "quantize_text_encoder": te})
+    warned = [r for r in caplog.records
+              if "NVFP4" in r.getMessage() and "F-7" in r.getMessage()
+              and "NOT reduce resident memory" in r.getMessage()]
+    assert bool(warned) is expected
+    assert model.quantization_info["quantize_transformer"] == tr  # value still accepted
+
+
+# ── 008 AS-5d: the auto default ───────────────────────────────────────────────
+
+def test_auto_resolves_to_int8_on_cuda_with_staged_load(caplog):  # AS-5d
+    import logging
+    import torchao.quantization as tq
+    with caplog.at_level(logging.INFO, logger="models.qwen_image_2_1"):
+        model, P = _load_cuda({})  # defaults: auto / auto
+    assert model.quantization_info["quantize_transformer"] == "int8"
+    assert model.quantization_info["quantize_text_encoder"] == "int8"
+    assert model.quantization_info["configured_quantize_transformer"] == "auto"
+    for loader in (P.tr, P.te):
+        qc = loader.from_pretrained.call_args.kwargs["quantization_config"]
+        assert isinstance(qc.quant_type, tq.Int8WeightOnlyConfig)
+    assert "device_map" in P.from_pretrained.call_args.kwargs
+    assert P.from_pretrained.call_args.kwargs["device_map"] == "cuda"  # staged path
+    assert any("transformer=int8 (configured auto)" in r.getMessage() for r in caplog.records)
+
+
+def test_auto_resolves_to_none_on_cpu_single_call(caplog):  # AS-5d
+    import logging
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline") as P, \
+         patch("models.qwen_image_2_1.QwenImage21Transformer2DModel") as Tr, \
+         patch("torch.cuda.is_available", return_value=False), \
+         caplog.at_level(logging.INFO, logger="models.qwen_image_2_1"):
+        model = QwenImage21()
+        model.load()
+    info = model.quantization_info
+    assert (info["quantize_transformer"], info["quantize_text_encoder"]) == ("none", "none")
+    P.from_pretrained.assert_called_once()
+    Tr.from_pretrained.assert_not_called()
+    assert "transformer" not in P.from_pretrained.call_args.kwargs
+    assert any("transformer=none (configured auto)" in r.getMessage() for r in caplog.records)
+
+
+def test_auto_with_explicit_int8_on_cpu_still_fails():  # AS-5d, FR-008-03
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline") as P, \
+         patch("torch.cuda.is_available", return_value=False):
+        model = QwenImage21(quantize_transformer="int8")  # text encoder auto -> none
+        with pytest.raises(RuntimeError, match="needs CUDA"):
+            model.load()
+    P.from_pretrained.assert_not_called()
+
+
+def test_explicit_none_on_cuda_is_bf16_single_call():
+    _, P = _load_cuda({"quantize_transformer": "none", "quantize_text_encoder": "none"})
+    P.tr.from_pretrained.assert_not_called()
+    assert P.from_pretrained.call_args.kwargs["device_map"] == "balanced"

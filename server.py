@@ -468,7 +468,9 @@ def get_model_info() -> dict:
     null if editing is unsupported), generate_output_resolution (the same for
     generate_image), max_output_resolution (the configured ceiling for both)
     and the default steps/CFG that apply when
-    you pass null (after env overrides).
+    you pass null (after env overrides). Also reports quantize_transformer and
+    quantize_text_encoder ("none", "int8", "fp8" or "nvfp4", the effective modes after "auto" is resolved; configured_* appears when it differs) and, once loaded,
+    weight_memory_gb (per-component resident weight size as stored).
     Useful for verifying the server is ready before requesting large images.
     """
     model = get_model()
@@ -503,6 +505,7 @@ def get_model_info() -> dict:
         "supported_aspect_ratios": sorted(model.aspect_ratios),
         "images_generated": store.count(),
         "output_directory": settings.image_output_dir,
+        **model.quantization_info,
         **gpu_info,
     }
 

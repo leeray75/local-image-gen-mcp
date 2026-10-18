@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Ceiling for both resolutions above; startup fails if either exceeds it.
     max_output_resolution: int = 1024
     torch_dtype: Literal["bfloat16", "float32"] = "bfloat16"
+    # Load-time weight quantization per pipeline component (spec 008). "none" = BF16.
+    # "auto" (default) = int8 on CUDA, none (BF16) on CPU; resolved by the backend.
+    quantize_transformer: Literal["auto", "none", "int8", "fp8", "nvfp4"] = "auto"
+    quantize_text_encoder: Literal["auto", "none", "int8", "fp8", "nvfp4"] = "auto"
 
     # HuggingFace — from environment only, never hardcoded
     hf_token: str | None = None
@@ -56,6 +60,12 @@ class Settings(BaseSettings):
     def _empty_to_none(cls, v):
         """Treat an empty env string (e.g. from compose) as unset."""
         return None if v == "" else v
+
+    @field_validator("quantize_transformer", "quantize_text_encoder", mode="before")
+    @classmethod
+    def _empty_to_auto_mode(cls, v):
+        """Treat an empty env string (e.g. from compose) as 'auto'."""
+        return "auto" if v == "" else v
 
     _RESOLUTION_FIELDS = (
         "edit_output_resolution", "generate_output_resolution", "max_output_resolution",

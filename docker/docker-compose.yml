@@ -29,6 +29,11 @@ services:
       # Empty = server default (1024). Above MAX_OUTPUT_RESOLUTION the server refuses to start
       GENERATE_OUTPUT_RESOLUTION: ${GENERATE_OUTPUT_RESOLUTION:-}
       MAX_OUTPUT_RESOLUTION: ${MAX_OUTPUT_RESOLUTION:-}
+      # Reduces CUDA caching-allocator retention while loading (spec 008 FR-008-11)
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      # Load-time weight quantization (auto|none|int8|fp8|nvfp4); empty = auto (int8 on CUDA, none on CPU); none = BF16
+      QUANTIZE_TRANSFORMER: ${QUANTIZE_TRANSFORMER:-}
+      QUANTIZE_TEXT_ENCODER: ${QUANTIZE_TEXT_ENCODER:-}
     deploy:
       resources:
         reservations:
