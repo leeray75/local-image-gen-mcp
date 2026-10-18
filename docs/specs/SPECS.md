@@ -39,6 +39,7 @@ code + tests   Every requirement ID must map to code and (where testable) a test
 | [006](006-open-items-closeout/spec.md) | Open items close-out and 0.2.0 release (`EDIT_OUTPUT_RESOLUTION`, `MCP_PATH`, Dockerfile layer order, compile-cache volumes, A/B test, GPU acceptance) | 0.2.0 | Implemented, GPU-verified (2026-10-18) | [spec 005 open items](005-qwen-image-2-1/spec.md), operator questions 2026-10-18 |
 | [007](007-1k-default-resolution/spec.md) | 1K default resolution and output-size ceiling (`GENERATE_OUTPUT_RESOLUTION`, `MAX_OUTPUT_RESOLUTION`, F-5 fix) | Unreleased (breaking) | Implemented, unit-tested; GPU A/B deferred (D-5) | [006 results](006-open-items-closeout/spec.md), operator decisions 2026-10-18 |
 | [008](008-load-time-quantization/spec.md) | Load-time weight quantization (`QUANTIZE_TRANSFORMER`, `QUANTIZE_TEXT_ENCODER`: int8, fp8, nvfp4) | Unreleased | Implemented and GPU-verified next to vLLM (2026-10-18); default `auto` = int8 on CUDA (18.5 GB vs 32.4 GB BF16) | [005 F-2](005-qwen-image-2-1/spec.md), operator decisions 2026-10-18 |
+| [009](009-qwen-image-2-1-turbo/spec.md) | Qwen-Image-2.1-Turbo (8-step) backend (`IMAGE_MODEL=qwen_image_2_1_turbo`, backend-driven step limits) | Unreleased | Implemented and GPU-verified (2026-10-18); Turbo is now the default (D-5), the base model stays selectable | [008](008-load-time-quantization/spec.md), operator decision 2026-10-18 |
 
 ## Document index
 
@@ -53,6 +54,7 @@ code + tests   Every requirement ID must map to code and (where testable) a test
 | [006 spec](006-open-items-closeout/spec.md) · [research](006-open-items-closeout/research.md) · [plan](006-open-items-closeout/plan.md) · [tasks](006-open-items-closeout/tasks.md) | Close-out and 0.2.0 |
 | [007 spec](007-1k-default-resolution/spec.md) · [research](007-1k-default-resolution/research.md) · [plan](007-1k-default-resolution/plan.md) · [tasks](007-1k-default-resolution/tasks.md) | 1K default and ceiling |
 | [008 spec](008-load-time-quantization/spec.md) · [research](008-load-time-quantization/research.md) · [plan](008-load-time-quantization/plan.md) · [tasks](008-load-time-quantization/tasks.md) | Load-time quantization |
+| [009 spec](009-qwen-image-2-1-turbo/spec.md) · [research](009-qwen-image-2-1-turbo/research.md) · [plan](009-qwen-image-2-1-turbo/plan.md) · [tasks](009-qwen-image-2-1-turbo/tasks.md) | Qwen-Image-2.1-Turbo |
 
 ## Conventions
 
