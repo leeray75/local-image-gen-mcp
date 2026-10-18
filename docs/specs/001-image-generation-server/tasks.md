@@ -26,7 +26,7 @@ Run the tasks in order. `[P]` marks a task that can run in parallel with the oth
 
 - [x] **T012** `pyproject.toml`: runtime deps (including `pydantic-settings`) and dev deps (`pytest`, `pytest-asyncio`, `httpx`). → R-8
 - [x] **T013 [P]** `tests/test_models.py`: lifecycle, name, negative prompt, generate-before-load error, and dtype selection, all with a mocked pipeline. → NFR-001-05
-- [ ] **T014 [P]** `tests/test_tools.py` *(file exists but is empty)*:
+- [x] **T014 [P]** `tests/test_tools.py` *(done in 005 and 006: registration, ratio sync, `list_aspect_ratios` and `get_model()` tests in `tests/test_tools.py`; the `get_dimensions` item is obsolete, since sizes now come from the backend table; ImageStore ordering is exercised through `store.list_all()` and the 003 latest-id tests)*:
   - tool registration (all five tools, both resources, both prompts)
   - `list_aspect_ratios` keys equal `ASPECT_RATIOS`
   - the `generate_image` `Literal` equals `ASPECT_RATIOS` keys
@@ -39,8 +39,8 @@ Run the tasks in order. `[P]` marks a task that can run in parallel with the oth
 
 ## Phase 5 — Closing spec gaps (open)
 
-- [ ] **T016** Clamp `cfg_scale` to [1.0, 10.0] in `generate_image`, and add a test. → FR-001-04
-- [ ] **T017** Pass `settings.mcp_path` to the `FastMCP` constructor (confirm the keyword, R-3). → FR-001-13
-- [ ] **T018** Serialize generation with a module-level `asyncio.Lock` around the `to_thread` call. → NFR-001-03
-- [ ] **T019** Correct the `ImageStore` class docstring (no rebuild from disk). → FR-001-10
-- [ ] **T020** GPU acceptance run of AS-1, AS-2, AS-5 and AS-6, with the results recorded in the CHANGELOG. → ⏳ items in the traceability table
+- [x] **T016** *(done in 005)* Clamp `cfg_scale` to [1.0, 10.0] in `generate_image`, and add a test. → FR-001-04
+- [x] **T017** *(done in 006)* Pass `settings.mcp_path` to the `FastMCP` constructor (`streamable_http_path=`, `server.py`; test `test_streamable_http_path_follows_settings`). → FR-001-13
+- [x] **T018** *(done in 005)* Serialize generation with a module-level `asyncio.Lock` around the `to_thread` call. → NFR-001-03
+- [x] **T019** *(done in 005)* Correct the `ImageStore` class docstring (no rebuild from disk). → FR-001-10
+- [x] **T020** GPU acceptance run of AS-1, AS-2, AS-5 and AS-6, with the results recorded in the CHANGELOG. *(Done 2026-10-18. AS-1 and AS-6 in the 005 smoke test (2K image, single model load). AS-2 in 006: byte-identical seed-42 output. AS-5 in 006: `list_aspect_ratios` answered in 0.02 s during a generation.)*

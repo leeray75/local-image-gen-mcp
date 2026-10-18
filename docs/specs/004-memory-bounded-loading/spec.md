@@ -41,7 +41,11 @@ Let the operator cap how much device memory the image model takes. Weights that 
 - **FR-004-06** The default deployment (compose) MUST set `IMAGE_GPU_MEMORY_LIMIT=40` and MUST NOT use a container memory limit as the mechanism.
 - **FR-004-07** The CPU-only path (no CUDA) MUST be unaffected: no `device_map`, no `max_memory`.
 
+> **Correction (2026-10-18, measured during 005):** on GB10 unified memory, layers that `max_memory` offloads to "CPU" still occupy the same physical RAM. The cap bounds GPU allocator placement, **not** the process's total memory, so it does not let the model coexist with vLLM by itself. With vLLM at `gpu-memory-utilization 0.6` (~73 GB), only ~28 GiB was free. The coexistence claims below are unverified, and probably wrong for total-memory pressure. See [005 NFR-005-02](../005-qwen-image-2-1/spec.md).
+
 ## Guidance values
+
+> **Superseded by 005:** the table below was estimated for Qwen-Image-2512 and its coexistence column is unverified (see the correction above). Qwen-Image-2.1 needs ~33 GB of weights plus activations; run it with vLLM stopped.
 
 These come from the code comments and are estimates, not benchmarks. Re-measure them and update this table (see tasks T005).
 
@@ -64,9 +68,9 @@ These come from the code comments and are estimates, not benchmarks. Re-measure 
 
 | Requirement | Implementation | Test | Status |
 |-------------|----------------|------|--------|
-| FR-004-01–04, 07 | `QwenImage2512.load`, `MEMORY_LIMIT_GB` | — | ✅ (no test) |
-| FR-004-05 | `os.getenv` in the model module | — | ⚠️ |
+| FR-004-01–04, 07 | `QwenImage21.load`, `memory_limit_gb` | `test_models::test_load_*` | ✅ |
+| FR-004-05 | `Settings.image_gpu_memory_limit` (005 FR-005-24) | `test_settings_memory_limit_reaches_backend` | ✅ |
 | FR-004-06 | `docker-compose.yml` env; `limits.memory` removed | — | ✅ |
-| AS-1 | manual on DGX Spark | — | ⏳ |
+| AS-1 | manual on DGX Spark | — | Obsolete (006 FR-006-09): vLLM can't run at the same time (005 M-1); the measured footprint is recorded in 005/006 |
 
 > The v0.1.1 CHANGELOG entry and `reports/bugfix-v0.1.1-summary.md` say `device_map="cuda"`. That was accurate for v0.1.1. The `[Unreleased]` CHANGELOG entry records the change to `"balanced"`.

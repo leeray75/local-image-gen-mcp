@@ -9,20 +9,22 @@ To add a new model backend:
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from PIL.Image import Image as PILImage
 
 
 @dataclass
 class GenerationRequest:
     """Parameters for a single image generation request."""
-    prompt: str
-    negative_prompt: str
-    width: int
-    height: int
+    prompt: str                          # user prompt, before any backend wrapping
+    negative_prompt: str | None          # None = no negative prompt
+    width: int | None                    # None (edit only) = size from last reference
+    height: int | None
     num_inference_steps: int
     cfg_scale: float
     seed: int
+    reference_images: list[PILImage] = field(default_factory=list)  # order is significant
+    transparent: bool = False
 
 
 @dataclass
@@ -31,6 +33,8 @@ class GenerationResult:
     image: PILImage          # PIL Image object
     seed: int                # actual seed used
     generation_time: float   # seconds
+    width: int               # actual output size
+    height: int
 
 
 class BaseImageModel(ABC):
@@ -69,3 +73,47 @@ class BaseImageModel(ABC):
     def model_name(self) -> str:
         """Human-readable model identifier."""
         ...
+
+    @property
+    @abstractmethod
+    def aspect_ratios(self) -> dict[str, tuple[int, int]]:
+        """Mapping of aspect-ratio key to (width, height) in pixels."""
+        ...
+
+    @property
+    @abstractmethod
+    def default_inference_steps(self) -> int:
+        """Backend-native default number of diffusion steps."""
+        ...
+
+    @property
+    @abstractmethod
+    def default_cfg_scale(self) -> float:
+        """Backend-native default CFG scale."""
+        ...
+
+    @property
+    @abstractmethod
+    def default_negative_prompt(self) -> str | None:
+        """Backend-native default negative prompt, or None."""
+        ...
+
+    @property
+    def max_reference_images(self) -> int:
+        """Maximum reference images for editing. 0 = editing unsupported."""
+        return 0
+
+    @property
+    def supports_transparency(self) -> bool:
+        """True if the backend can produce RGBA output."""
+        return False
+
+    @property
+    def edit_output_resolution(self) -> int | None:
+        """Pixel-area target (side length) for edits, or None if editing is unsupported."""
+        return None
+
+    @property
+    def supports_editing(self) -> bool:
+        """True if the backend accepts reference images."""
+        return self.max_reference_images > 0

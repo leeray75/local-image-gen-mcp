@@ -32,6 +32,8 @@ Facts that the design depends on, each verified against the pinned dependency or
 
 ## R-5 Qwen-Image-2512 pipeline parameters
 
+> **Superseded by [005](../005-qwen-image-2-1/spec.md):** the 2512 pipeline facts, resolution table and default negative prompt below no longer apply. The backend is now Qwen-Image-2.1.
+
 **Source:** the Hugging Face model card for `Qwen/Qwen-Image-2512`.
 
 | Fact | Value |

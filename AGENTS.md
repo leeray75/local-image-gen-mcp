@@ -4,11 +4,11 @@ Instructions for AI coding agents working in this repository. Human-oriented doc
 
 ## Project overview
 
-An MCP server (Streamable HTTP on `:8500/mcp`) that wraps a local text-to-image diffusion model and exposes it as MCP tools, resources and prompts. The model is currently Qwen-Image-2512, run via `diffusers`. It runs on an NVIDIA DGX Spark: aarch64, GB10 Blackwell GPU, and 128 GB of memory shared by the CPU and GPU. A vLLM stack runs on the same machine, and that drives most of the memory-related design.
+An MCP server (Streamable HTTP on `:8500/mcp`) that wraps a local text-to-image diffusion model and exposes it as MCP tools, resources and prompts. The model is currently Qwen-Image-2.1 (text-to-image, image editing and RGBA output), run via `diffusers` (`QwenImage21Pipeline`). It runs on an NVIDIA DGX Spark: aarch64, GB10 Blackwell GPU, and 128 GB of memory shared by the CPU and GPU. A vLLM stack runs on the same machine, and that drives most of the memory-related design.
 
 - Python ≥ 3.11
-- MCP SDK `mcp[cli]` ≥ 1.27, using **`mcp.server.fastmcp`** (the official SDK, not the standalone `fastmcp` package)
-- `pydantic` v2 + `pydantic-settings`, `diffusers`, `transformers`, `accelerate`, `torch`
+- MCP SDK `mcp[cli]` ≥ 1.27, < 2, using **`mcp.server.fastmcp`** (the official SDK, not the standalone `fastmcp` package)
+- `pydantic` v2 + `pydantic-settings`, `diffusers` ≥ 0.41, `transformers` ≥ 5.17, `accelerate`, `torch`
 
 ## Setup and commands
 
@@ -21,7 +21,7 @@ IMAGE_OUTPUT_DIR=./outputs python server.py
 
 # Tests: the DiffusionPipeline is mocked, so no GPU is needed
 uv run pytest tests/ -v
-uv run pytest tests/test_models.py::test_load_and_generate -v      # single test
+uv run pytest tests/test_models.py::test_generate_t2i_kwargs -v    # single test
 
 # Quick import / tool-registration check
 IMAGE_OUTPUT_DIR=./outputs python -c "from server import mcp; print([t.name for t in mcp._tool_manager.list_tools()])"
@@ -46,18 +46,19 @@ No linter or formatter is configured. Before you finish a change, run the test s
 | Path | Role |
 |------|------|
 | `server.py` | FastMCP app with all tools, resources and prompts, plus the entrypoint |
-| `models/base.py` | `BaseImageModel` ABC (`load`, `unload`, `generate`, `is_loaded`, `model_name`) and the request/result dataclasses |
+| `models/base.py` | `BaseImageModel` ABC (`load`, `unload`, `generate`, `is_loaded`, `model_name`, plus `aspect_ratios`, defaults, `max_reference_images`, `supports_transparency`) and the request/result dataclasses |
 | `models/__init__.py` | `load_model()` factory that switches on `settings.image_model` |
-| `models/qwen_image_2512.py` | Qwen backend and `DEFAULT_NEGATIVE_PROMPT` |
+| `models/qwen_image_2_1.py` | Qwen-Image-2.1 backend: size table, defaults, transparency phrasing |
 | `config/settings.py` | `settings` singleton. All config comes from the environment and `.env`. |
-| `config/aspect_ratios.py` | Ratio → pixel-size table |
+| `storage/references.py` | Decoding and validation of `edit_image` references (image IDs or base64) |
 | `storage/image_store.py` | Thread-safe `store` singleton, created at import time |
 
 **Key invariants:**
 - **The model loads once per process, with no lifespan.** In this SDK version a FastMCP lifespan runs once per session, so the model would reload on every connection. Instead, `_startup_load_model()` runs in `__main__` before `mcp.run()`, and tools call `get_model()`. Importing `server` does not load the model.
 - **Host and port go to the `FastMCP()` constructor.** `mcp.run()` accepts only `transport`. Passing `host` or `port` raises a `TypeError`.
 - **Adding a backend takes three edits:** a new `BaseImageModel` subclass, a branch in `load_model()`, and the new ID added to the `Literal` on `Settings.image_model`. Tool code must not depend on a particular model.
-- **Two copies must stay in sync:** the `aspect_ratio` `Literal` in `generate_image` and the keys of `ASPECT_RATIOS`.
+- **Two copies must stay in sync:** the `Ratio` `Literal` in `server.py` and the keys of the backend's `ASPECT_RATIOS` (a test asserts this).
+- **One generation at a time:** `_run_generation` holds `_generation_lock` around `asyncio.to_thread(model.generate, …)`. Reference decoding happens before the lock.
 - **The image index lives only in memory.** PNGs survive a restart on the volume, but `image://`, `images://list` and `get_latest_image_id` only know about images from the current process.
 
 ## Code style
@@ -74,16 +75,21 @@ Match the surrounding code:
 ## Model and runtime pitfalls
 
 - Pass `device_map` to `from_pretrained()`. **Never call `.to(device)` afterwards**: the pipeline uses meta-tensor init, and `.to()` raises `NotImplementedError: Cannot copy out of meta tensor`. On CUDA the code uses `device_map="balanced"`, because accelerate ignores `max_memory` with `"cuda"`.
-- `IMAGE_GPU_MEMORY_LIMIT` (in GB) caps device memory through `max_memory` and offloads the rest to the CPU. Uncapped, the model uses about 62 GB and destabilizes the host while vLLM is running. Compose sets it to 40. Don't replace it with a Docker memory limit, which only gets the container OOM-killed.
+- `IMAGE_GPU_MEMORY_LIMIT` (in GB, a `Settings` field) caps device memory through `max_memory` and offloads the rest to the CPU. The model needs about 33 GB of weights, and measured peaks are ~68 GB for a 2K generate and ~40 GB for an edit at the default 1024 (~76–81 GB at 2048). Because CPU and GPU share one RAM pool, the cap does NOT reduce total memory use and does NOT make the server fit alongside vLLM: stop vLLM first. Compose sets it to 40. Don't replace it with a Docker memory limit, which only gets the container OOM-killed.
 - Qwen's CFG kwarg is `true_cfg_scale`, not `guidance_scale`.
-- `DEFAULT_NEGATIVE_PROMPT` contains Chinese on purpose. Don't "fix" it.
+- **Guidance is off by default** (`true_cfg_scale=1.0`, 40 steps). `negative_prompt` is ignored unless `cfg_scale > 1`, so the backend only passes it when set and the server warns.
+- **The VAE always returns RGBA.** The backend converts to RGB unless `transparent=True`. Transparency works by wrapping the prompt in the model card's RGBA phrasing.
+- **Editing:** pass `image=[...]` plus `output_resolution=<EDIT_OUTPUT_RESOLUTION>` (a `Settings` field, multiple of 32 in [512, 2048], default 1024, passed to the backend by `load_model()`). With no `width`/`height`, the output follows the **last** reference's aspect ratio. Reference order is "Picture N" order, so never reorder. `output_resolution=2048` produced over-sharpened, instruction-ignoring edits (spec 005 F-1); the 006 A/B test found 1024 clean, so 1024 is the default.
+- **UUID trap:** only a canonical hyphenated 36-char UUID counts as an `image_id`. A bare 32-hex string is valid base64 and is decoded as such.
+- Don't change `use_kv_cache` between calls (determinism).
 - `Image(data=...)` takes raw PNG bytes. Don't base64-encode them first.
 
 ## Testing instructions
 
-- Tests must run without a GPU. Patch `models.qwen_image_2512.DiffusionPipeline`, the way `tests/test_models.py` does.
+- Tests must run without a GPU. Patch `models.qwen_image_2_1.QwenImage21Pipeline`, the way `tests/test_models.py` does.
 - Tests that import `server` or `storage` need `IMAGE_OUTPUT_DIR` pointing at a writable temporary directory (use `tmp_path` / `monkeypatch`).
-- `tests/test_tools.py` is currently empty. When you touch tools, resources or the store, add tests there.
+- `tests/conftest.py` sets `IMAGE_OUTPUT_DIR` before imports. `tests/test_tools.py` drives the tools with a fake `BaseImageModel` and a mock `ctx`; when you touch tools, resources or the store, add tests there.
+- Run the suite in the project image, not on the host: `docker build -f docker/Dockerfile -t local-image-gen-mcp:qwen21-test .`, then `docker run --rm --entrypoint bash -v "$PWD":/app -w /app local-image-gen-mcp:qwen21-test -c 'pip install -q pytest pytest-asyncio pyyaml && IMAGE_OUTPUT_DIR=/tmp/out python -m pytest tests -v'` (no `--gpus`).
 - GPU-only behavior (generation determinism, memory cap, healthcheck) is checked by hand, using the acceptance scenarios in `docs/specs/`.
 
 ## Spec-driven workflow
@@ -111,9 +117,12 @@ For a new feature or a change in behavior:
 
 ## Deployment notes
 
+- `docker-compose.override.yml` joins the external network named by `AI_BRIDGE_NETWORK` (default `ai-litellm-proxy_ai-bridge`, the LiteLLM stack's real name; a bare `ai-bridge` does not exist). Compose reads it; the server does not.
+- The MCP SDK rejects request bodies over 4 MiB with HTTP 413 before any tool runs. `MAX_REQUEST_BODY_MB` (a `Settings` field, default computed as `ceil(10 × MAX_REFERENCE_IMAGE_MB × 4/3) + 1` = 268) is passed to `FastMCP(max_request_body_size=…)` in bytes. Tests that call tool functions directly bypass this limit, so keep the HTTP-level test. Prefer `image_id` references over base64.
 - The base image is `nvcr.io/nvidia/pytorch:26.04-py3`, which supports Blackwell on aarch64. The image runs as root. Python deps are installed with `PIP_CONSTRAINT="" pip install`, and torch is **not** installed, so NVIDIA's build is kept.
 - Dependency versions appear in both `docker/Dockerfile` and `pyproject.toml`. Update both.
-- The healthcheck is a raw TCP connect, because `/mcp` returns 406 without MCP headers, so `curl -f` always fails. The start period is 180 s. The first start downloads about 15 GB into the mounted `~/.cache/huggingface`.
+- The healthcheck is a raw TCP connect, because `/mcp` returns 406 without MCP headers, so `curl -f` always fails. The start period is 180 s. The first start downloads about 33 GB into the mounted `~/.cache/huggingface` (huggingface_hub ≥ 1.x keeps the files in the shared `hub/blobs/` store). Later starts reuse them. The Dockerfile copies the app code *after* `pip install`, so a code-only change reuses the cached dependency layer on rebuild. Keep that order.
+- Compose mounts the named volumes `image-gen-cuda-cache` (`/root/.nv`) and `image-gen-torch-cache` (`/root/.cache/torch`) so compiled GPU kernels survive container recreation. Never mount all of `/root/.cache`, which would shadow the HuggingFace bind mount. The CUDA cache is invalidated by NVIDIA driver upgrades; the torch kernel caches are keyed by code and toolkit version, so updates recompile automatically. Force a full recompile with `docker volume rm docker_image-gen-cuda-cache docker_image-gen-torch-cache` (compose project prefix), or `CUDA_CACHE_DISABLE=1` for one run.
 
 ## Commits and pull requests
 

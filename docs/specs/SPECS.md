@@ -33,8 +33,10 @@ code + tests   Every requirement ID must map to code and (where testable) a test
 |----|---------|---------|--------|-----------------|
 | [001](001-image-generation-server/spec.md) | Image generation MCP server (core tools, resources, prompts, pluggable backends, storage) | 0.1.0 → 0.1.1 | Implemented | `ai-workspace/plans/implementation.md`, `plans/bug-fix.md`, `reports/implementation-summary.md`, `reports/bugfix-v0.1.1-summary.md` |
 | [002](002-container-deployment/spec.md) | Container deployment on DGX Spark (Dockerfile, compose, healthcheck, ai-bridge) | 0.1.0 → 0.1.1 | Implemented | `plans/implementation.md` (Tasks 10–12), `reports/bugfix-v0.1.1-summary.md` |
-| [003](003-image-retrieval-tools/spec.md) | Client-side image retrieval tools (`get_image_base64`, `get_latest_image_id`) | Unreleased | Implemented, uncommitted | `plans/add-tools.md`, `reports/uncommitted-changes-report.md` |
-| [004](004-memory-bounded-loading/spec.md) | Memory-bounded model loading for coexistence with vLLM | Unreleased | Implemented, uncommitted | Uncommitted diff in `models/qwen_image_2512.py`, `docker/docker-compose.yml` |
+| [003](003-image-retrieval-tools/spec.md) | Client-side image retrieval tools (`get_image_base64`, `get_latest_image_id`) | Unreleased | Implemented, committed | `plans/add-tools.md`, `reports/uncommitted-changes-report.md` |
+| [004](004-memory-bounded-loading/spec.md) | Memory-bounded model loading for coexistence with vLLM | Unreleased | Implemented, committed | Commit `7258331` (the `models/qwen_image_2512.py` part was later replaced by 005) |
+| [005](005-qwen-image-2-1/spec.md) | Upgrade to Qwen-Image-2.1 (native 2K text-to-image, `edit_image`, RGBA, serialization, settings cleanup) | Unreleased (breaking) | Implemented, GPU-verified (F-1 resolved by 006; F-2 open) | Branch `feature/qwen-image-2-1` |
+| [006](006-open-items-closeout/spec.md) | Open items close-out and 0.2.0 release (`EDIT_OUTPUT_RESOLUTION`, `MCP_PATH`, Dockerfile layer order, compile-cache volumes, A/B test, GPU acceptance) | 0.2.0 | Implemented, GPU-verified (2026-10-18) | [spec 005 open items](005-qwen-image-2-1/spec.md), operator questions 2026-10-18 |
 
 ## Document index
 
@@ -45,6 +47,8 @@ code + tests   Every requirement ID must map to code and (where testable) a test
 | [002 spec](002-container-deployment/spec.md) · [plan](002-container-deployment/plan.md) · [tasks](002-container-deployment/tasks.md) | Deployment |
 | [003 spec](003-image-retrieval-tools/spec.md) · [plan](003-image-retrieval-tools/plan.md) · [tasks](003-image-retrieval-tools/tasks.md) | Retrieval tools |
 | [004 spec](004-memory-bounded-loading/spec.md) · [plan](004-memory-bounded-loading/plan.md) · [tasks](004-memory-bounded-loading/tasks.md) | Memory cap |
+| [005 spec](005-qwen-image-2-1/spec.md) · [research](005-qwen-image-2-1/research.md) · [data model](005-qwen-image-2-1/data-model.md) · [contracts](005-qwen-image-2-1/contracts/mcp-interface.md) · [plan](005-qwen-image-2-1/plan.md) · [tasks](005-qwen-image-2-1/tasks.md) | Qwen-Image-2.1 upgrade |
+| [006 spec](006-open-items-closeout/spec.md) · [research](006-open-items-closeout/research.md) · [plan](006-open-items-closeout/plan.md) · [tasks](006-open-items-closeout/tasks.md) | Close-out and 0.2.0 |
 
 ## Conventions
 
@@ -60,9 +64,16 @@ Collected from the traceability tables in each spec. These are the places where 
 
 | Gap | Feature | Reference |
 |-----|---------|-----------|
-| `tests/test_tools.py` is empty — no tests for tool registration, aspect ratios, or the image store | 001, 003 | FR-001-17, FR-003-06 |
-| `MCP_PATH` is read into settings and logged but never passed to `FastMCP`; it only works because `/mcp` is the SDK default | 001 | FR-001-13 |
-| `cfg_scale` is documented as 1.0–10.0 but not clamped or validated | 001 | FR-001-04 |
-| `ImageStore` docstring claims the index "is rebuilt from disk on restart"; it is not | 001 | FR-001-10 |
-| Concurrent `generate_image` calls share one pipeline with no serialization | 001 | NFR-001-03 |
-| `IMAGE_GPU_MEMORY_LIMIT` is read via `os.getenv` in the model module, bypassing `Settings`; missing from `.env.example` and README | 004 | FR-004-05 |
+| ~~`tests/test_tools.py` is empty~~ — closed by 005 (NFR-005-03) | 001, 003 | FR-001-17, FR-003-06 |
+| ~~`MCP_PATH` was never passed to `FastMCP`~~ — closed by 006 (FR-006-05) | 001 | FR-001-13 |
+| ~~`cfg_scale` not clamped~~ — closed by 005 (FR-005-07) | 001 | FR-001-04 |
+| ~~`ImageStore` docstring claimed a rebuild from disk~~ — closed by 005 (T005) | 001 | FR-001-10 |
+| ~~2K edits showed over-sharpening artifacts~~ — closed by 006 (default 1024, A/B test, FR-006-03) | 005 | F-1, T022 |
+| ~~Dockerfile copied code before `pip install`~~ — closed by 006 (FR-006-04) | 002 | T023 (005) |
+| ~~Concurrent calls not serialized~~ — closed by 005 (NFR-005-01) | 001 | NFR-001-03 |
+| ~~`IMAGE_GPU_MEMORY_LIMIT` bypassed `Settings`~~ — closed by 005 (FR-005-24) | 004 | FR-004-05 |
+| ~~003 acceptance tests only partly covered~~ — closed by 006 (FR-006-07) | 003 | T004 |
+| ~~001 contract listed `negative_defaults` and pointed nowhere for 003/005~~ — closed by 006 (FR-006-08) | 001 | 003 T005 |
+| ~~Stale checkboxes; 004 T005 measured an impossible scenario~~ — closed by 006 (FR-006-09) | 001, 003, 004 | O-8 |
+| ~~Manual GPU acceptance (001 AS-2, AS-5; 002 AS-1–AS-6; 003 T007) not yet run~~ — closed by 006 (all pass, 2026-10-18) | 001, 002, 003 | FR-006-10 |
+| F-2: memory footprint and coexisting with vLLM (out of scope by operator decision) | 005 | F-2 |

@@ -17,9 +17,13 @@ def load_model() -> BaseImageModel:
     """
     from config.settings import settings
 
-    if settings.image_model == "qwen_image_2512":
-        from .qwen_image_2512 import QwenImage2512
-        return QwenImage2512(torch_dtype_str=settings.torch_dtype)
+    if settings.image_model == "qwen_image_2_1":
+        from .qwen_image_2_1 import QwenImage21
+        return QwenImage21(
+            torch_dtype_str=settings.torch_dtype,
+            memory_limit_gb=settings.image_gpu_memory_limit,
+            edit_output_resolution=settings.edit_output_resolution,
+        )
 
     raise ValueError(
         f"Unknown image_model: '{settings.image_model}'. "

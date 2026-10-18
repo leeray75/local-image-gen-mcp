@@ -27,6 +27,8 @@ outputs/
 *.jpg
 *.jpeg
 *.webp
+# ...except spec evidence (e.g. A/B thumbnails in docs/specs/<feature>/ab/)
+!docs/specs/*/ab/*.jpg
 
 # Model cache (large — don't commit)
 .cache/

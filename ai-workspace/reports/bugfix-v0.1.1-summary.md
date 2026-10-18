@@ -1,5 +1,7 @@
 # Bugfix v0.1.1 — Summary Report
 
+> **Historical snapshot.** This report describes the repo as of its date. For current state see `CHANGELOG.md`, `docs/specs/SPECS.md` and later reports.
+
 **Date:** 2026-05-04
 **Branch:** `bugfix/meta-tensor-and-lifespan-fixes`
 **Base commit:** `d7b7080` (v0.1.0 initial release)

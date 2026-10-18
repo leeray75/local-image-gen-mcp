@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Implemented, uncommitted (in `server.py` working tree) |
+| **Status** | Implemented, committed (`9567d08`); end-to-end verified on GPU 2026-10-18 |
 | **Constitution** | VIII |
 | **Depends on** | [001](../001-image-generation-server/spec.md) (ImageStore, `image://` resource) |
 | **Next** | [plan.md](plan.md) → [tasks.md](tasks.md) |
@@ -57,9 +57,9 @@ Add two tools that give an agent a reliable, tools-only workflow: generate, find
 | FR-003-03, 04 | `server.py` `get_image_base64` → `store.get_image_bytes` | — | ✅ (no test) |
 | FR-003-05 | docstrings | review | ✅ |
 | FR-003-06 | the diff only adds the two tools | review of `git diff server.py` | ✅ |
-| AS-1–5 | — | `tests/test_tools.py` (empty) | ❌ |
+| AS-1–5 | — | `tests/test_tools.py` (`test_latest_image_id_*`, `test_image_base64_*`, `test_tool_registration`) | ✅ (closed by 006); T007 end-to-end ✅ (006 GPU window: generate → `get_latest_image_id` → `get_image_base64` → decoded 4.8 MB valid PNG) |
 
 ## Notes
 
-- Base64 makes the payload about 33% larger. A 1328² PNG can be several MB of text, which counts against the client's context window. Agents should call this tool only when they need to save the file.
+- Base64 makes the payload about 33% larger. A 2K PNG (2048² since 005) is about 3–10 MB, more as base64, which counts against the client's context window. Agents should call this tool only when they need to save the file.
 - "Most recent" means newest by insertion in the in-process index. After a restart, earlier images can't be reached through these tools (FR-001-10).

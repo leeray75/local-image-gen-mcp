@@ -7,33 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-18
+
+> **BREAKING** — upgrade to Qwen-Image-2.1 ([spec 005](docs/specs/005-qwen-image-2-1/spec.md)). Defaults and output sizes change, `negative_defaults` is removed and `IMAGE_MODEL=qwen_image_2512` is rejected. Qwen-Image-2.1 is under the Qwen Research License (non-commercial use only). GPU smoke test passed on 2026-10-18 on a DGX Spark GB10:
+> - load: 32.4 GB on the GPU, one load
+> - 2K generate: ~256 s; 2K transparent: ~256 s; 2K edit: ~372 s
+> - peak host RAM: ~68 GB (generate), ~76 GB (edit)
+>
+> - 0.2.0 GPU acceptance (spec 006): edits at the new 1024 default take ~61 s with ~49 GB peak host RAM (2048: ~340 s, ~90 GB); seed determinism, container lifecycle, the bridge network, a 12.7 MB base64 reference and the 003 save workflow all verified
+>
+> Run it with vLLM stopped. The 2K edit artifacts (spec 005 F-1) are fixed in this release: `EDIT_OUTPUT_RESOLUTION` ([spec 006](docs/specs/006-open-items-closeout/spec.md)) now defaults to 1024, which the A/B test found clean where 2048 was not.
+
 ### Added
 
+- **Qwen-Image-2.1 backend** (`models/qwen_image_2_1.py`, `diffusers.QwenImage21Pipeline`, `Qwen/Qwen-Image-2.1`): native 2K text-to-image, editing and RGBA output; ~33 GB of weights
+- **`edit_image` tool** — edit or combine 1-10 ordered reference images (store `image_id`s and/or base64 PNG/JPEG/WebP); output follows the last reference's aspect ratio at about `EDIT_OUTPUT_RESOLUTION`² area (default 1024) unless `aspect_ratio` is set
+- **`transparent` flag** on `generate_image` and `edit_image` — RGBA output via the model card's transparency phrasing
+- **Prompts `transparent_asset` and `extract_subject`**
+- `get_model_info` reports `max_reference_images`, `supports_editing`, `supports_transparency`, `has_default_negative_prompt` and the resolved defaults; `images://list` and `get_latest_image_id` include `mode` and `transparent`
+- `MAX_REFERENCE_IMAGE_MB` (default 20)
+- **`EDIT_OUTPUT_RESOLUTION`** setting (multiple of 32, 512-2048, default 1024 (chosen by the A/B test: 2048 edits were over-sharpened and ignored instructions), empty = default), passed to the backend as the pipeline's `output_resolution` for edits; `get_model_info` reports `edit_output_resolution` ([spec 006](docs/specs/006-open-items-closeout/spec.md))
+- **`MAX_REQUEST_BODY_MB`** setting (default computed: 268 MB at `MAX_REFERENCE_IMAGE_MB=20`), passed to `FastMCP(max_request_body_size=…)`; the SDK's 4 MiB default made `edit_image` reject base64 references above ~3 MB with HTTP 413 (spec 006 F-4)
+- `AI_BRIDGE_NETWORK` for `docker-compose.override.yml` (default `ai-litellm-proxy_ai-bridge`); the override previously referenced a network that doesn't exist (spec 006 F-3)
+- Compose named volumes `image-gen-cuda-cache` and `image-gen-torch-cache` persist the CUDA JIT and PyTorch kernel caches across container recreation (spec 006)
+- Tests for the 003 retrieval tools, `EDIT_OUTPUT_RESOLUTION`, the MCP path and the compose volumes (`tests/test_deploy.py`)
+- Generation and editing calls are serialized by a single lock
+- `storage/references.py`, `ImageStore.load_image()`, and a GPU-free test suite (`tests/conftest.py`, `test_models.py`, `test_references.py`, `test_tools.py`, `pytest.ini`)
 - **`get_image_base64(image_id)` tool** — returns a stored image as a plain base64 PNG string so agents can save images to the client filesystem; docstring documents decode-before-write ([spec 003](docs/specs/003-image-retrieval-tools/spec.md))
 - **`get_latest_image_id()` tool** — returns the id and metadata of the most recently generated image without reading the `images://list` resource ([spec 003](docs/specs/003-image-retrieval-tools/spec.md))
-- **`IMAGE_GPU_MEMORY_LIMIT` env var** — caps the model's device memory (GB) via accelerate `max_memory`, offloading excess layers to CPU so the image model can coexist with vLLM on GB10 unified memory. Unset = uncapped with a startup warning ([spec 004](docs/specs/004-memory-bounded-loading/spec.md))
+- **`IMAGE_GPU_MEMORY_LIMIT` env var** — caps the model's device memory (GB) via accelerate `max_memory`, offloading excess layers to CPU. On GB10 unified memory this bounds GPU placement, not total RAM, so it does **not** let the image model coexist with vLLM by itself (see spec 004 correction). Validated as a `Settings` field. Unset = uncapped with a startup warning ([spec 004](docs/specs/004-memory-bounded-loading/spec.md))
 - Startup logging of memory mode and post-load PyTorch CUDA allocated/reserved memory
-- **Spec-driven development docs** in `docs/specs/` — project constitution plus spec, research, data model, contracts, plan and tasks for features 001–004, with requirement traceability ([index](docs/specs/SPECS.md))
+- **Spec-driven development docs** in `docs/specs/` — project constitution plus spec, research, data model, contracts, plan and tasks for features 001–005, with requirement traceability ([index](docs/specs/SPECS.md))
 - `AGENTS.md` ([agents.md](https://agents.md) open format) with setup/test commands, architecture, code style, pitfalls, spec workflow, security and PR guidelines for all coding agents; `CLAUDE.md` imports it via `@AGENTS.md`
 
 ### Changed
 
+- **Breaking:** `generate_image` defaults are now backend-native: 40 steps, `cfg_scale` 1.0 (guidance off) and no negative prompt (was 50 / 4.0 / Chinese default); `num_inference_steps`, `cfg_scale` and `negative_prompt` default to `null`. Steps are clamped to [20, 100] and `cfg_scale` to [1.0, 10.0]
+- **Breaking:** output sizes are the native 2K table (1:1 = 2048×2048, was 1328×1328)
+- `MAX_INFERENCE_STEPS` / `DEFAULT_CFG_SCALE` are optional overrides (unset by default); removed from the Dockerfile `ENV` and compose; `ENV IMAGE_MODEL=qwen_image_2_1`
+- Model-specific facts (size table, defaults, reference limit, transparency) live on the backend; `server.py` imports nothing model-specific (its docstrings still describe the active backend, as NFR-005-05 requires)
+- Dependencies: `diffusers>=0.41.0`, `transformers>=5.17`, `mcp[cli]>=1.27.0,<2` (mcp 2.x removed `mcp.server.fastmcp`)
+- Docs now state that the memory cap does not let the server fit alongside vLLM on unified memory: stop vLLM first
+- `photorealistic` prompt wording is model-neutral
 - **Model loading uses `device_map="balanced"`** instead of `device_map="cuda"` (v0.1.1) — required for `max_memory` to be honored; still avoids post-load `.to()` (meta tensor fix preserved)
 - `docker-compose.yml` sets `IMAGE_GPU_MEMORY_LIMIT: "40"` by default
+- **Fixed:** `MCP_PATH` is now passed to `FastMCP` as `streamable_http_path` (it was only logged)
+- **Dockerfile:** app source is copied after `pip install`, so code-only rebuilds reuse the cached dependency layer
+- Version is `0.2.0` in `pyproject.toml` (was `1.0.0`, which conflicted with the 0.x history)
 
 ### Removed
 
+- Qwen-Image-2512 backend (`models/qwen_image_2512.py`), its `DEFAULT_NEGATIVE_PROMPT`, `config/aspect_ratios.py` and the `negative_defaults` prompt
 - `deploy.resources.limits.memory: 40g` from `docker-compose.yml` (added in `a42846d`) — a cgroup limit does not change model placement and only OOM-kills the container; replaced by `IMAGE_GPU_MEMORY_LIMIT`
 
 ### Known issues
 
 Tracked as open tasks in `docs/specs/`:
 
-- `tests/test_tools.py` is empty — no tests for tools, aspect ratios or the image store
-- `MCP_PATH` is not passed to `FastMCP` (works only because `/mcp` is the SDK default)
-- `cfg_scale` is not clamped to its documented 1.0–10.0 range
-- Concurrent `generate_image` calls are not serialized on the shared pipeline
-- `IMAGE_GPU_MEMORY_LIMIT` is read via `os.getenv` rather than `Settings`, and is missing from `.env.example` and the README
+- The image server (~68 GB peak for a 2K generate) can't run alongside vLLM at `gpu-memory-utilization 0.6`; stop vLLM first (spec 005 F-2)
 
 ## [0.1.1] — 2026-05-04
 
