@@ -1,5 +1,7 @@
 # Implementation Summary — local-image-gen-mcp v0.1.0
 
+> **Historical snapshot.** This report describes the repo as of its date. For current state see `CHANGELOG.md`, `docs/specs/SPECS.md` and later reports.
+
 **Date:** 2026-05-03
 **Status:** Complete
 

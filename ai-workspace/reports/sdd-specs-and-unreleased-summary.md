@@ -1,5 +1,7 @@
 # SDD Specs & Unreleased Changes — Summary Report
 
+> **Historical snapshot.** This report describes the repo as of its date. For current state see `CHANGELOG.md`, `docs/specs/SPECS.md` and later reports.
+
 **Date:** 2026-10-18
 **Branch:** `bugfix/meta-tensor-and-lifespan-fixes`
 **Last committed:** `a42846d` — add memory limit 40g to docker compose
