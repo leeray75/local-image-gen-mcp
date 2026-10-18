@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-18
+
 > **BREAKING** — the default text-to-image size changes from native 2K to about 1K ([spec 007](docs/specs/007-1k-default-resolution/spec.md)). `generate_image` at `1:1` now returns 1024×1024 (was 2048×2048). To get 2K back, set both `GENERATE_OUTPUT_RESOLUTION=2048` and `MAX_OUTPUT_RESOLUTION=2048`. GPU verification (1K vs 2K A/B, measured 1K peak memory) is deferred: vLLM stays up in this cycle.
 
 ### Added
