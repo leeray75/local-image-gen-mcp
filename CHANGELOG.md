@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Load-time weight quantization** ([spec 008](docs/specs/008-load-time-quantization/spec.md)): `QUANTIZE_TRANSFORMER` and `QUANTIZE_TEXT_ENCODER` (`auto`, `none`, `int8`, `fp8`, `nvfp4`; default `auto`; empty = `auto`) quantize the official Qwen weights while loading, one setting per component, via a diffusers `PipelineQuantizationConfig` (torchao for int8/fp8, NVIDIA ModelOpt for the image model's nvfp4, a torchao prototype config for the text encoder's nvfp4). The VAE, the text encoder's vision tower and `lm_head`, and the image model's input/output, timestep, modulation and norm layers stay BF16. An unsupported mode fails startup with an error naming both modes, and an explicit `int8`, `fp8` or `nvfp4` fails on CPU (`auto` resolves to `none` there)
+- `get_model_info` reports the effective `quantize_transformer` / `quantize_text_encoder`, `configured_quantize_*` when they differ (e.g. `auto`), and `weight_memory_gb` (per-component weight size as stored); the load log prints the same
+- `BaseImageModel.quantization_info` (default `{}`); both settings are passed through in `docker/docker-compose.yml`
+- **Load-time memory mitigations** (spec 008 F-6, FR-008-10 to 12): with any quantization on, the image model and the text encoder load one at a time with memory freed between them and CUDA/host memory logged after each step (`IMAGE_GPU_MEMORY_LIMIT` is not applied on this path); compose sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` by default. `none`/`none` loading is unchanged
+- NVFP4 is accepted but unsupported on GB10 with the current libraries (no resident-memory saving, spec 008 F-7); selecting it logs a startup warning
+- Measured on the GPU next to vLLM: `int8`/`int8` and `fp8`/`fp8` both hold 18.5 GB of weights (BF16: 32.4 GB); results table in the README
+
+### Changed
+- **The image server now runs alongside vLLM** (spec 005 F-2 resolved): with the default `int8` quantization, ~18.5 GB of weights, it ran next to vLLM at `gpu-memory-utilization 0.6`, with ≥ ~10 GB still available while loading and ~15 GB while generating. BF16 (`none`) and 2K output still need vLLM stopped
+- **Default quantization is now `auto`, which means `int8` on CUDA and `none` (BF16) on CPU** (spec 008 D-10, D-11). The server therefore loads int8-quantized weights by default on a GPU (18.5 GB instead of 32.4 GB). Set `QUANTIZE_TRANSFORMER=none` and `QUANTIZE_TEXT_ENCODER=none` for BF16. `get_model_info` reports the effective modes and `configured_quantize_*` when `auto` was resolved
+
 ## [0.3.0] — 2026-10-18
 
 > **BREAKING** — the default text-to-image size changes from native 2K to about 1K ([spec 007](docs/specs/007-1k-default-resolution/spec.md)). `generate_image` at `1:1` now returns 1024×1024 (was 2048×2048). To get 2K back, set both `GENERATE_OUTPUT_RESOLUTION=2048` and `MAX_OUTPUT_RESOLUTION=2048`. GPU verification (1K vs 2K A/B, measured 1K peak memory) is deferred: vLLM stays up in this cycle.

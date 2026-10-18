@@ -60,7 +60,7 @@ docker compose up -d --build
 docker compose -f docker-compose.yml -f docker-compose.override.yml up -d --build
 ```
 
-The server starts on `http://localhost:8500/mcp`. The first startup downloads ~33 GB of model weights into `~/.cache/huggingface` (mounted from the host, so later starts don't download again). Each start still loads the model into memory before the server accepts connections. **Stop vLLM first** (see [Memory Requirements](#memory-requirements)).
+The server starts on `http://localhost:8500/mcp`. The first startup downloads ~33 GB of model weights into `~/.cache/huggingface` (mounted from the host, so later starts don't download again). Each start still loads the model into memory (~3¼ min) before the server accepts connections. With the default `int8` quantization the server **runs alongside vLLM** (~18.5 GB of weights). BF16 (`QUANTIZE_*=none`) or 2K output needs vLLM stopped (see [Memory Requirements](#memory-requirements)).
 
 ### Verify
 
@@ -195,6 +195,8 @@ edit_image(prompt="Extract the main subject from Picture 1 ...", images=["<base6
 | `EDIT_OUTPUT_RESOLUTION` | `1024` | Edit output size: about this many pixels per side in area (multiple of 32, 512-2048; empty = default). `get_model_info` reports the value in effect |
 | `GENERATE_OUTPUT_RESOLUTION` | `1024` | Text-to-image output size: about this many pixels per side in area (multiple of 32, 512-2048; empty = default). 2048 uses the model card's 2K table. `get_model_info` reports the value in effect |
 | `MAX_OUTPUT_RESOLUTION` | `1024` | Ceiling for `GENERATE_OUTPUT_RESOLUTION` and `EDIT_OUTPUT_RESOLUTION` (multiple of 32, 512-2048; empty = default). The server refuses to start if either is above it. To opt into 2K, raise **both** the resolution and this ceiling |
+| `QUANTIZE_TRANSFORMER` | `auto` | Load-time weight quantization of the image model (DiT): `auto` (= `int8` on CUDA, `none` on CPU), `none` (BF16), `int8`, `fp8` (torchao weight-only) or `nvfp4` (NVIDIA ModelOpt; **unsupported on GB10, see below**). Empty = `auto`. Set `none` for BF16. An explicit quantized mode needs CUDA; an unsupported mode fails startup and never falls back to BF16 ([spec 008](docs/specs/008-load-time-quantization/spec.md)) |
+| `QUANTIZE_TEXT_ENCODER` | `auto` | The same for the Qwen3-VL text encoder: `auto`, `none`, `int8`, `fp8` or `nvfp4` (**unsupported on GB10, see below**; it also uses a torchao prototype API, `torchao.prototype.mx_formats`). The VAE is never quantized |
 | `TORCH_DTYPE` | `bfloat16` | Torch dtype: `bfloat16` or `float32` |
 | `HF_TOKEN` | *(required)* | HuggingFace API token (from environment only) |
 
@@ -230,7 +232,11 @@ if settings.image_model == "flux_schnell":
 
 ## Memory Requirements
 
-Measured on the DGX Spark (GB10) on 2026-10-18. Memory is the image server's approximate share: the system-wide peak minus the other running services.
+Measured on the DGX Spark (GB10) on 2026-10-18.
+
+**Default (`int8`, spec 008), running next to vLLM at `gpu-memory-utilization 0.6`:** 18.5 GB of weights. A 1K generate takes ~62 s and a 1024 edit ~72 s. At least ~10 GB of host memory stayed free while loading and ~15 GB while generating. See the [weight quantization](#weight-quantization-spec-008) results table.
+
+**BF16 (`QUANTIZE_TRANSFORMER=none`, `QUANTIZE_TEXT_ENCODER=none`), with vLLM stopped.** Memory is the image server's approximate share: the system-wide peak minus the other running services.
 
 | | Memory | Time |
 |---|---|---|
@@ -241,18 +247,41 @@ Measured on the DGX Spark (GB10) on 2026-10-18. Memory is the image server's app
 | `edit_image`, 1 reference, default `EDIT_OUTPUT_RESOLUTION=1024` | ~40 GB peak | ~61 s |
 | `edit_image` at `EDIT_OUTPUT_RESOLUTION=2048` (not recommended) | ~76–81 GB peak | ~340–372 s |
 
-The GB10 has 128 GB shared by CPU and GPU, so run this server with the vLLM engine **stopped**. With vLLM at `gpu-memory-utilization 0.6`, only ~28 GiB was free. To switch:
+The GB10 has 128 GB shared by CPU and GPU. With vLLM at `gpu-memory-utilization 0.6`, about 37 GB is available. That's enough for the `int8` default, but not for BF16 or 2K output, which need the vLLM engine **stopped**. The default's tightest moment is startup, so avoid starting the image server while vLLM is under heavy load. To switch for BF16 or 2K work:
 
 ```bash
 docker stop qwen3-8-27b-nvfp4-engine && (cd docker && docker compose up -d)   # image generation
 docker stop local-image-gen-mcp && docker start qwen3-8-27b-nvfp4-engine        # back to vLLM
 ```
 
- `IMAGE_GPU_MEMORY_LIMIT` only limits where accelerate places layers; offloaded layers live in the same physical RAM on unified memory, so the cap does **not** let the server fit alongside vLLM. At the default 1024, both edits and text-to-image need less memory than a 2K generate. More references, or a higher `EDIT_OUTPUT_RESOLUTION` or `GENERATE_OUTPUT_RESOLUTION`, need more. The 1K text-to-image numbers are estimates: the GPU A/B test is deferred ([spec 007](docs/specs/007-1k-default-resolution/spec.md)).
+ `IMAGE_GPU_MEMORY_LIMIT` only limits where accelerate places layers; offloaded layers live in the same physical RAM on unified memory, so the cap does **not** let the server fit alongside vLLM. At the default 1024, both edits and text-to-image need less memory than a 2K generate. More references, or a higher `EDIT_OUTPUT_RESOLUTION` or `GENERATE_OUTPUT_RESOLUTION`, need more. The BF16 1K text-to-image numbers are estimates, because the BF16 1K vs 2K A/B test is still deferred ([spec 007](docs/specs/007-1k-default-resolution/spec.md)). The `int8` 1K numbers are measured (spec 008).
 
 **Edit quality:** edits at `output_resolution=2048` showed over-sharpening and ignored instructions ([spec 005](docs/specs/005-qwen-image-2-1/spec.md), finding F-1). The A/B test in [spec 006](docs/specs/006-open-items-closeout/spec.md) found 1024 clean, so `EDIT_OUTPUT_RESOLUTION` defaults to 1024. Raise it up to 2048 at your own risk.
 
 **Opting into 2K:** set `GENERATE_OUTPUT_RESOLUTION=2048` and `MAX_OUTPUT_RESOLUTION=2048` (and `EDIT_OUTPUT_RESOLUTION=2048` for edits, not recommended). Raising a resolution without the ceiling makes the server exit at startup with an error naming the setting. Stop vLLM first: a 2K generate peaks at ~68 GB.
+
+### Weight quantization (spec 008)
+
+`QUANTIZE_TRANSFORMER` and `QUANTIZE_TEXT_ENCODER` each take `auto`, `none`, `int8`, `fp8` or `nvfp4`. The server quantizes the official Qwen weights while loading, so nothing extra is downloaded. **The default is `auto`: `int8` on CUDA, `none` (BF16) on CPU** (chosen from the GPU results below). To get BF16 on a GPU, set both settings to `none`; that needs about 40 GB for a 1K generate, so stop vLLM first. An explicit `int8`, `fp8` or `nvfp4` on CPU fails at startup. `get_model_info` reports the effective modes (plus `configured_quantize_*` when `auto` was resolved) and the per-component weight size as stored (`weight_memory_gb`), and the startup log prints the same.
+
+- Layers kept in BF16: the text encoder's vision tower and `lm_head`, and the image model's input/output projections, timestep, modulation and norm layers (module names verified in [research R-5](docs/specs/008-load-time-quantization/research.md)).
+- `int8` and `fp8` are weight-only (torchao); `nvfp4` on the image model is weight-only through NVIDIA ModelOpt. Weight-only quantization saves memory and may be *slower* than BF16.
+- **Warning:** NVFP4 is **unsupported on GB10 with the current library versions** (spec 008 F-7): it does not reduce resident memory (the ModelOpt transformer stayed at its BF16 size, 14.2 GB) and the torchao prototype text-encoder path used far more than expected while loading. The value is still accepted, with a startup warning, so it can be re-tested after library updates. Prefer `int8` or `fp8`.
+- Also: `nvfp4` on the text encoder uses a torchao **prototype** API. NVFP4 on the GB10 (sm_121) was not pursued further (D-8).
+- **Staged loading:** with any effective mode other than `none` (which is the default on CUDA, since `auto` resolves to `int8`), the image model and then the text encoder load one at a time, with `gc.collect()`, `torch.cuda.empty_cache()` and a memory log line (CUDA allocated/reserved and host `MemAvailable`) after each step; then the pipeline is built around them. `IMAGE_GPU_MEMORY_LIMIT` is not applied in this path. With `none`/`none` loading is unchanged.
+- Compose sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` by default (override with the `PYTORCH_CUDA_ALLOC_CONF` variable) to reduce CUDA caching-allocator retention while loading.
+- If a mode cannot load, startup fails with an error naming both settings. There is no silent fallback. On CPU, `auto` resolves to `none`; an explicit `int8`, `fp8` or `nvfp4` fails.
+
+Measured on the DGX Spark (GB10) on 2026-10-18, running next to vLLM (`gpu-memory-utilization 0.6`), 1K outputs, seed 42, 40 steps. G1 is a photo, G2 typography, G3 a transparent sticker, E1 a 1024 edit.
+
+| Image model / text encoder | Weights allocated | Load | Min host available (load / generate) | G1 / G2 / G3 / E1 time | Quality |
+|---|---|---|---|---|---|
+| `int8` / `int8` (**default on CUDA**) | 18.54 GB (transformer 7.27, text encoder 10.60, VAE 0.68) | 194 s | 10.2 / 14.6 GB | 77.5 / 62 / 62 / 71.6 s | lettering exact, sticker 61.1% transparent, edit ≈ BF16 |
+| `fp8` / `fp8` | 18.53 GB (7.26 / 10.59 / 0.68) | 191 s | 9.8 / 15.5 GB | 176 / 86 / 87 / 121 s | lettering exact, sticker 60.9% transparent, edit ≈ BF16 |
+| `none` / `none` (BF16) | 32.4 GB | ~195 s | does not fit next to vLLM | 1024 edit 61 s in spec 006 (vLLM stopped) | reference |
+| `nvfp4` | transformer 14.23 GB (no saving) | did not complete (memory watchdog) | n/a | n/a | unsupported on GB10 with current libraries (F-7); dropped (D-8) |
+
+`int8` was chosen as the default (D-10): the same memory as `fp8`, about BF16 speed, exact lettering and an edit nearly identical to BF16. The 1K BF16 generate peak was never measured (it does not fit next to vLLM).
 
 ### Rebuilds and compile caches
 
