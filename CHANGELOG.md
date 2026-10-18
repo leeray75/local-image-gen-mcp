@@ -7,21 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-18
+
 > **BREAKING** — upgrade to Qwen-Image-2.1 ([spec 005](docs/specs/005-qwen-image-2-1/spec.md)). Defaults and output sizes change, `negative_defaults` is removed and `IMAGE_MODEL=qwen_image_2512` is rejected. Qwen-Image-2.1 is under the Qwen Research License (non-commercial use only). GPU smoke test passed on 2026-10-18 on a DGX Spark GB10:
 > - load: 32.4 GB on the GPU, one load
 > - 2K generate: ~256 s; 2K transparent: ~256 s; 2K edit: ~372 s
 > - peak host RAM: ~68 GB (generate), ~76 GB (edit)
 >
-> Run it with vLLM stopped. **Known issue:** 2K edits show over-sharpening artifacts (spec 005 F-1).
+> - 0.2.0 GPU acceptance (spec 006): edits at the new 1024 default take ~61 s with ~49 GB peak host RAM (2048: ~340 s, ~90 GB); seed determinism, container lifecycle, the bridge network, a 12.7 MB base64 reference and the 003 save workflow all verified
+>
+> Run it with vLLM stopped. The 2K edit artifacts (spec 005 F-1) are fixed in this release: `EDIT_OUTPUT_RESOLUTION` ([spec 006](docs/specs/006-open-items-closeout/spec.md)) now defaults to 1024, which the A/B test found clean where 2048 was not.
 
 ### Added
 
 - **Qwen-Image-2.1 backend** (`models/qwen_image_2_1.py`, `diffusers.QwenImage21Pipeline`, `Qwen/Qwen-Image-2.1`): native 2K text-to-image, editing and RGBA output; ~33 GB of weights
-- **`edit_image` tool** — edit or combine 1-10 ordered reference images (store `image_id`s and/or base64 PNG/JPEG/WebP); output follows the last reference's aspect ratio at ~2048² unless `aspect_ratio` is set
+- **`edit_image` tool** — edit or combine 1-10 ordered reference images (store `image_id`s and/or base64 PNG/JPEG/WebP); output follows the last reference's aspect ratio at about `EDIT_OUTPUT_RESOLUTION`² area (default 1024) unless `aspect_ratio` is set
 - **`transparent` flag** on `generate_image` and `edit_image` — RGBA output via the model card's transparency phrasing
 - **Prompts `transparent_asset` and `extract_subject`**
 - `get_model_info` reports `max_reference_images`, `supports_editing`, `supports_transparency`, `has_default_negative_prompt` and the resolved defaults; `images://list` and `get_latest_image_id` include `mode` and `transparent`
 - `MAX_REFERENCE_IMAGE_MB` (default 20)
+- **`EDIT_OUTPUT_RESOLUTION`** setting (multiple of 32, 512-2048, default 1024 (chosen by the A/B test: 2048 edits were over-sharpened and ignored instructions), empty = default), passed to the backend as the pipeline's `output_resolution` for edits; `get_model_info` reports `edit_output_resolution` ([spec 006](docs/specs/006-open-items-closeout/spec.md))
+- **`MAX_REQUEST_BODY_MB`** setting (default computed: 268 MB at `MAX_REFERENCE_IMAGE_MB=20`), passed to `FastMCP(max_request_body_size=…)`; the SDK's 4 MiB default made `edit_image` reject base64 references above ~3 MB with HTTP 413 (spec 006 F-4)
+- `AI_BRIDGE_NETWORK` for `docker-compose.override.yml` (default `ai-litellm-proxy_ai-bridge`); the override previously referenced a network that doesn't exist (spec 006 F-3)
+- Compose named volumes `image-gen-cuda-cache` and `image-gen-torch-cache` persist the CUDA JIT and PyTorch kernel caches across container recreation (spec 006)
+- Tests for the 003 retrieval tools, `EDIT_OUTPUT_RESOLUTION`, the MCP path and the compose volumes (`tests/test_deploy.py`)
 - Generation and editing calls are serialized by a single lock
 - `storage/references.py`, `ImageStore.load_image()`, and a GPU-free test suite (`tests/conftest.py`, `test_models.py`, `test_references.py`, `test_tools.py`, `pytest.ini`)
 - **`get_image_base64(image_id)` tool** — returns a stored image as a plain base64 PNG string so agents can save images to the client filesystem; docstring documents decode-before-write ([spec 003](docs/specs/003-image-retrieval-tools/spec.md))
@@ -42,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `photorealistic` prompt wording is model-neutral
 - **Model loading uses `device_map="balanced"`** instead of `device_map="cuda"` (v0.1.1) — required for `max_memory` to be honored; still avoids post-load `.to()` (meta tensor fix preserved)
 - `docker-compose.yml` sets `IMAGE_GPU_MEMORY_LIMIT: "40"` by default
+- **Fixed:** `MCP_PATH` is now passed to `FastMCP` as `streamable_http_path` (it was only logged)
+- **Dockerfile:** app source is copied after `pip install`, so code-only rebuilds reuse the cached dependency layer
+- Version is `0.2.0` in `pyproject.toml` (was `1.0.0`, which conflicted with the 0.x history)
 
 ### Removed
 
@@ -52,10 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 Tracked as open tasks in `docs/specs/`:
 
-- `MCP_PATH` is not passed to `FastMCP` (works only because `/mcp` is the SDK default)
-- 2K edits show over-sharpening and HDR-like artifacts, suspected to come from `output_resolution=2048` (spec 005 F-1, T022)
-- The image server (~68–76 GB peak) can't run alongside vLLM at `gpu-memory-utilization 0.6`; stop vLLM first
-- The Dockerfile copies the app code before `pip install`, so code-only rebuilds reinstall all deps (spec 005 T023)
+- The image server (~68 GB peak for a 2K generate) can't run alongside vLLM at `gpu-memory-utilization 0.6`; stop vLLM first (spec 005 F-2)
 
 ## [0.1.1] — 2026-05-04
 
