@@ -260,6 +260,75 @@ def get_model_info() -> dict:
     }
 
 
+@mcp.tool()
+def get_image_base64(image_id: str) -> str:
+    """
+    Return a previously generated image as a base64-encoded PNG string.
+
+    Use this when you need to save the image to a client-side filesystem.
+    The returned string is plain base64 — decode it to binary before writing
+    to a .png file. Writing the raw string to a .png file will NOT work.
+
+    Correct client-side usage (Python):
+        import base64
+        data = get_image_base64(image_id)
+        with open('output.png', 'wb') as f:
+            f.write(base64.b64decode(data))
+
+    Args:
+        image_id: UUID returned by generate_image or from images://list resource.
+
+    Returns:
+        Base64-encoded PNG string (plain text, not a data URI).
+    """
+    import base64 as b64
+    img_bytes = store.get_image_bytes(image_id)
+    return b64.b64encode(img_bytes).decode("utf-8")
+
+
+@mcp.tool()
+def get_latest_image_id() -> dict:
+    """
+    Return the image_id of the most recently generated image.
+
+    Use this immediately after generate_image to get the image_id without
+    having to parse the images://list resource. Combines with get_image_base64
+    for a two-step save workflow:
+        1. id = get_latest_image_id()["image_id"]
+        2. b64 = get_image_base64(id)
+        3. decode and write to .png on client filesystem
+
+    Returns:
+        dict with keys:
+          image_id:     UUID of the most recent image
+          prompt:       First 100 chars of the prompt used
+          aspect_ratio: e.g. "16:9"
+          width:        Pixel width
+          height:       Pixel height
+          seed:         Seed used for generation
+          model_name:   Model that generated it
+
+    Raises:
+        RuntimeError if no images have been generated yet this session.
+    """
+    images = store.list_all()
+    if not images:
+        raise RuntimeError(
+            "No images have been generated in this session. "
+            "Call generate_image first."
+        )
+    latest = images[0]  # list_all() returns newest first
+    return {
+        "image_id": latest.image_id,
+        "prompt": latest.prompt[:100],
+        "aspect_ratio": latest.aspect_ratio,
+        "width": latest.width,
+        "height": latest.height,
+        "seed": latest.seed,
+        "model_name": latest.model_name,
+    }
+
+
 # ── Resources ─────────────────────────────────────────────────────────────────
 
 @mcp.resource("image://{image_id}")
