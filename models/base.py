@@ -112,6 +112,21 @@ class BaseImageModel(ABC):
         ...
 
     @property
+    def min_inference_steps(self) -> int:
+        """Lowest accepted step count; the server clamps to it (spec 009)."""
+        return 20
+
+    @property
+    def max_inference_steps(self) -> int:
+        """Highest accepted step count; the server clamps to it (spec 009)."""
+        return 100
+
+    @property
+    def model_id(self) -> str:
+        """Checkpoint identifier (e.g. a Hugging Face repo ID), or "" if none."""
+        return ""
+
+    @property
     def max_reference_images(self) -> int:
         """Maximum reference images for editing. 0 = editing unsupported."""
         return 0

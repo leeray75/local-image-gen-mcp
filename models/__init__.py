@@ -17,9 +17,10 @@ def load_model() -> BaseImageModel:
     """
     from config.settings import settings
 
-    if settings.image_model == "qwen_image_2_1":
+    if settings.image_model in ("qwen_image_2_1", "qwen_image_2_1_turbo"):
         from .qwen_image_2_1 import QwenImage21
         return QwenImage21(
+            variant="turbo" if settings.image_model == "qwen_image_2_1_turbo" else "base",
             torch_dtype_str=settings.torch_dtype,
             memory_limit_gb=settings.image_gpu_memory_limit,
             edit_output_resolution=settings.edit_output_resolution,

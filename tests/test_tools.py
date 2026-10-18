@@ -29,7 +29,8 @@ class FakeModel(BaseImageModel):
     @property
     def edit_output_resolution(self): return 1024 if self._editing else None
 
-    def __init__(self, editing=True, transparency=True, delay=0.0):
+    def __init__(self, editing=True, transparency=True, delay=0.0, steps=(40, 20, 100)):
+        self._steps = steps  # (default, min, max)
         self.requests: list[GenerationRequest] = []
         self._editing, self._transparency, self._delay = editing, transparency, delay
         self.active = 0
@@ -48,7 +49,13 @@ class FakeModel(BaseImageModel):
         # distinct from RATIOS so tests can tell which table a tool used
         return {k: (w * resolution // 64, h * resolution // 64) for k, (w, h) in self.RATIOS.items()}
     @property
-    def default_inference_steps(self): return 40
+    def default_inference_steps(self): return self._steps[0]
+    @property
+    def min_inference_steps(self): return self._steps[1]
+    @property
+    def max_inference_steps(self): return self._steps[2]
+    @property
+    def model_id(self): return "fake/checkpoint"
     @property
     def default_cfg_scale(self): return 1.0
     @property
@@ -385,7 +392,7 @@ def test_settings_defaults(monkeypatch):
               "IMAGE_GPU_MEMORY_LIMIT", "MAX_REFERENCE_IMAGE_MB"):
         monkeypatch.delenv(v, raising=False)
     s = Settings(_env_file=None)
-    assert s.image_model == "qwen_image_2_1"
+    assert s.image_model == "qwen_image_2_1_turbo"
     assert s.max_inference_steps is None and s.default_cfg_scale is None
     assert s.image_gpu_memory_limit is None and s.max_reference_image_mb == 20
 
@@ -709,3 +716,85 @@ def test_get_model_info_shows_configured_only_when_different(fake, monkeypatch):
     info = server.get_model_info()
     assert info["quantize_transformer"] == "int8"
     assert info["configured_quantize_transformer"] == "auto"
+
+
+# ── Backend-driven step limits and Turbo (spec 009) ───────────────────────────
+
+def test_resolve_params_base_range_unchanged():  # AS-3
+    assert server._resolve_params(FakeModel(), 5, None, None)[0] == 20
+    assert server._resolve_params(FakeModel(), 500, None, None)[0] == 100
+    assert server._resolve_params(FakeModel(), None, None, None)[::3] == (40, [])
+
+
+def test_resolve_params_turbo_fixed_steps_warn():  # AS-2
+    turbo = FakeModel(steps=(8, 8, 8))
+    steps, _, _, warn = server._resolve_params(turbo, 40, None, None)
+    assert steps == 8 and len(warn) == 1 and "fixed 8-step" in warn[0]
+    assert server._resolve_params(turbo, None, None, None)[::3] == (8, [])
+    assert server._resolve_params(turbo, 8, None, None)[::3] == (8, [])
+
+
+def test_resolve_params_turbo_env_override_warns(monkeypatch):
+    monkeypatch.setattr(server.settings, "max_inference_steps", 30)
+    steps, _, _, warn = server._resolve_params(FakeModel(steps=(8, 8, 8)), None, None, None)
+    assert steps == 8 and "fixed 8-step" in warn[0]
+
+
+@pytest.mark.parametrize("tool", ["generate_image", "edit_image"])
+async def test_turbo_clamps_and_warns_client(fake, ctx, monkeypatch, tool):  # AS-2
+    model = FakeModel(steps=(8, 8, 8))
+    monkeypatch.setattr(server, "_model", model)
+    args = ("x",) if tool == "generate_image" else ("x", [b64png()])
+    await getattr(server, tool)(*args, num_inference_steps=40, ctx=ctx)
+    assert model.requests[0].num_inference_steps == 8
+    ctx.warning.assert_awaited_once()
+    assert "fixed 8-step" in ctx.warning.await_args.args[0]
+
+
+def test_get_model_info_reports_checkpoint_and_range(fake, monkeypatch):  # AS-4
+    info = server.get_model_info()
+    assert info["model_id"] == "fake/checkpoint"
+    assert (info["min_inference_steps"], info["max_inference_steps"]) == (20, 100)
+    monkeypatch.setattr(server, "_model", FakeModel(steps=(8, 8, 8)))
+    info = server.get_model_info()
+    assert (info["default_inference_steps"], info["min_inference_steps"],
+            info["max_inference_steps"]) == (8, 8, 8)
+
+
+def test_settings_accept_turbo(monkeypatch):  # AS-1
+    monkeypatch.setenv("IMAGE_MODEL", "qwen_image_2_1_turbo")
+    assert Settings(_env_file=None).image_model == "qwen_image_2_1_turbo"
+
+
+def test_factory_builds_turbo_backend(monkeypatch):  # AS-1
+    import models
+    import config.settings as cs
+    monkeypatch.setenv("IMAGE_MODEL", "qwen_image_2_1_turbo")
+    monkeypatch.setattr(cs, "settings", Settings(_env_file=None))
+    m = models.load_model()
+    assert m.model_id == "Qwen/Qwen-Image-2.1-Turbo" and m.model_name == "Qwen-Image-2.1-Turbo"
+    assert (m.default_inference_steps, m.min_inference_steps, m.max_inference_steps) == (8, 8, 8)
+
+
+def test_factory_builds_turbo_backend_by_default(monkeypatch):  # D-5
+    import models
+    import config.settings as cs
+    monkeypatch.delenv("IMAGE_MODEL", raising=False)
+    monkeypatch.setattr(cs, "settings", Settings(_env_file=None))
+    m = models.load_model()
+    assert m.model_id == "Qwen/Qwen-Image-2.1-Turbo" and m.max_inference_steps == 8
+
+
+def test_factory_builds_base_backend_when_selected(monkeypatch):  # AS-3
+    import models
+    import config.settings as cs
+    monkeypatch.setenv("IMAGE_MODEL", "qwen_image_2_1")
+    monkeypatch.setattr(cs, "settings", Settings(_env_file=None))
+    m = models.load_model()
+    assert m.model_id == "Qwen/Qwen-Image-2.1" and m.max_inference_steps == 100
+
+
+def test_docstrings_do_not_claim_universal_40_steps():  # FR-009-05
+    for doc in (server.generate_image.__doc__, server.edit_image.__doc__):
+        assert "40 steps" not in doc and "Range 20-100" not in doc
+        assert "Turbo" in doc

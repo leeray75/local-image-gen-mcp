@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     mcp_path: str = "/mcp"
 
     # Model selection — controls which backend in models/ is loaded
-    image_model: Literal["qwen_image_2_1"] = "qwen_image_2_1"
+    image_model: Literal["qwen_image_2_1", "qwen_image_2_1_turbo"] = "qwen_image_2_1_turbo"
 
     # Storage
     image_output_dir: str = "/outputs"

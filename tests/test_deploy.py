@@ -66,3 +66,8 @@ def test_compose_passes_quantization_settings_through(compose):  # 008 FR-008-08
 def test_compose_sets_expandable_segments_default(compose):  # 008 AS-5c, FR-008-11
     env = compose["services"]["local-image-gen-mcp"]["environment"]
     assert env["PYTORCH_CUDA_ALLOC_CONF"] == "${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+
+def test_compose_passes_image_model_through(compose):  # 009 FR-009-06
+    env = compose["services"]["local-image-gen-mcp"]["environment"]
+    assert env["IMAGE_MODEL"] == "${IMAGE_MODEL:-qwen_image_2_1_turbo}"

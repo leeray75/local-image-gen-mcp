@@ -597,3 +597,48 @@ def test_explicit_none_on_cuda_is_bf16_single_call():
     _, P = _load_cuda({"quantize_transformer": "none", "quantize_text_encoder": "none"})
     P.tr.from_pretrained.assert_not_called()
     assert P.from_pretrained.call_args.kwargs["device_map"] == "balanced"
+
+
+# ── Turbo variant (spec 009) ──────────────────────────────────────────────────
+
+def test_base_variant_properties():  # AS-3 (backend side)
+    m = QwenImage21()
+    assert m.model_id == "Qwen/Qwen-Image-2.1"
+    assert (m.default_inference_steps, m.min_inference_steps, m.max_inference_steps) == (40, 20, 100)
+
+
+def test_turbo_variant_properties():  # AS-1
+    m = QwenImage21(variant="turbo")
+    assert m.model_id == "Qwen/Qwen-Image-2.1-Turbo"
+    assert m.model_name == "Qwen-Image-2.1-Turbo"
+    assert (m.default_inference_steps, m.min_inference_steps, m.max_inference_steps) == (8, 8, 8)
+    assert m.default_cfg_scale == 1.0 and m.default_negative_prompt is None
+    assert m.max_reference_images == 10 and m.supports_transparency is True
+
+
+def test_invalid_variant_rejected():
+    with pytest.raises(ValueError, match="variant"):
+        QwenImage21(variant="fast")
+
+
+@patch("models.qwen_image_2_1.QwenImage21Pipeline")
+def test_turbo_loads_turbo_checkpoint(MockPipeline):
+    with patch("torch.cuda.is_available", return_value=True), \
+         patch("torch.cuda.memory_allocated", return_value=0), \
+         patch("torch.cuda.memory_reserved", return_value=0):
+        QwenImage21(variant="turbo", quantize_transformer="none", quantize_text_encoder="none").load()
+    assert MockPipeline.from_pretrained.call_args.args[0] == "Qwen/Qwen-Image-2.1-Turbo"
+
+
+def test_turbo_generate_kwargs_use_checkpoint_schedule(mock_pipeline):
+    """No sigmas and no scheduler override: the checkpoint's sample_sigmas apply (R-1)."""
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline") as MockPipeline:
+        MockPipeline.from_pretrained.return_value = mock_pipeline
+        model = QwenImage21(variant="turbo")
+        model.load()
+    model.generate(_req(num_inference_steps=8))
+    kwargs = mock_pipeline.call_args.kwargs
+    assert kwargs["num_inference_steps"] == 8
+    assert "sigmas" not in kwargs and "timesteps" not in kwargs
+    assert kwargs["true_cfg_scale"] == 1.0
+    mock_pipeline.scheduler.assert_not_called()

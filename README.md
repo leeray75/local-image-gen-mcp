@@ -60,7 +60,7 @@ docker compose up -d --build
 docker compose -f docker-compose.yml -f docker-compose.override.yml up -d --build
 ```
 
-The server starts on `http://localhost:8500/mcp`. The first startup downloads ~33 GB of model weights into `~/.cache/huggingface` (mounted from the host, so later starts don't download again). Each start still loads the model into memory (~3¼ min) before the server accepts connections. With the default `int8` quantization the server **runs alongside vLLM** (~18.5 GB of weights). BF16 (`QUANTIZE_*=none`) or 2K output needs vLLM stopped (see [Memory Requirements](#memory-requirements)).
+The server starts on `http://localhost:8500/mcp`. The default is Qwen-Image-2.1-Turbo. The first startup downloads ~32 GB of its weights into `~/.cache/huggingface` (mounted from the host, so later starts don't download again). Each start still loads the model into memory (~3¼ min) before the server accepts connections. With the default `int8` quantization the server **runs alongside vLLM** (~18.5 GB of weights). BF16 (`QUANTIZE_*=none`) or 2K output needs vLLM stopped (see [Memory Requirements](#memory-requirements)).
 
 ### Verify
 
@@ -137,7 +137,7 @@ Configure a Streamable HTTP server with the URL `http://localhost:8500/mcp`. In 
 | `aspect_ratio` | `str` | `"1:1"` | One of: `1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, `2:3` (about `GENERATE_OUTPUT_RESOLUTION`² of area; default 1024, so 1:1 = 1024x1024; `list_aspect_ratios` shows the exact sizes) |
 | `transparent` | `bool` | `false` | `true` = RGBA PNG with a real alpha channel |
 | `negative_prompt` | `str \| null` | `null` | What to exclude. Only takes effect when `cfg_scale > 1`. |
-| `num_inference_steps` | `int \| null` | `null` (40) | Range 20-100 (clamped). |
+| `num_inference_steps` | `int \| null` | `null` (backend default) | Clamped to the backend's range: 20-100, default 40 for Qwen-Image-2.1; fixed at 8 for Turbo (other values are ignored with a warning). See `get_model_info`. |
 | `cfg_scale` | `float \| null` | `null` (1.0) | Range 1.0-10.0 (clamped). 1.0 = guidance off (the model's tuned default). |
 | `seed` | `int \| null` | `null` | Reproducibility seed. `null` = random. |
 
@@ -184,9 +184,9 @@ edit_image(prompt="Extract the main subject from Picture 1 ...", images=["<base6
 | `MCP_HOST` | `0.0.0.0` | Host to bind to |
 | `MCP_PORT` | `8500` | Port to bind to |
 | `MCP_PATH` | `/mcp` | MCP endpoint path |
-| `IMAGE_MODEL` | `qwen_image_2_1` | Backend model identifier (only accepted value) |
+| `IMAGE_MODEL` | `qwen_image_2_1_turbo` | Backend: `qwen_image_2_1_turbo` (default, fixed 8 steps) or `qwen_image_2_1` (the 40-step base model); see [Qwen-Image-2.1-Turbo](#qwen-image-21-turbo-spec-009)) |
 | `IMAGE_OUTPUT_DIR` | `/outputs` | Directory for generated images |
-| `MAX_INFERENCE_STEPS` | *(unset)* | Optional override of the default steps (backend default 40; clamped 20-100) |
+| `MAX_INFERENCE_STEPS` | *(unset)* | Optional override of the default steps (backend default 40, clamped 20-100; Turbo is fixed at 8 and ignores it with a warning) |
 | `DEFAULT_CFG_SCALE` | *(unset)* | Optional override of the default CFG (backend default 1.0; clamped 1.0-10.0) |
 | `IMAGE_GPU_MEMORY_LIMIT` | *(unset; compose sets 40)* | Device-memory cap in GB (accelerate `max_memory`) |
 | `MAX_REFERENCE_IMAGE_MB` | `20` | Max decoded size of one `edit_image` reference |
@@ -234,9 +234,9 @@ if settings.image_model == "flux_schnell":
 
 Measured on the DGX Spark (GB10) on 2026-10-18.
 
-**Default (`int8`, spec 008), running next to vLLM at `gpu-memory-utilization 0.6`:** 18.5 GB of weights. A 1K generate takes ~62 s and a 1024 edit ~72 s. At least ~10 GB of host memory stayed free while loading and ~15 GB while generating. See the [weight quantization](#weight-quantization-spec-008) results table.
+**Default (Turbo, `int8`), running next to vLLM at `gpu-memory-utilization 0.54`:** 18.5 GB of weights. A 1K generate takes ~14 s and a 1024 edit ~17 s (the first image after a start takes longer because of warm-up). At least ~13.8 GB of host memory stayed free while loading and ~17.7 GB while generating. See the [Turbo](#qwen-image-21-turbo-spec-009) results. The base model (`IMAGE_MODEL=qwen_image_2_1`, int8, vLLM at 0.6) takes ~62 s and ~72 s; see the [weight quantization](#weight-quantization-spec-008) table.
 
-**BF16 (`QUANTIZE_TRANSFORMER=none`, `QUANTIZE_TEXT_ENCODER=none`), with vLLM stopped.** Memory is the image server's approximate share: the system-wide peak minus the other running services.
+**BF16 base model (`IMAGE_MODEL=qwen_image_2_1`, `QUANTIZE_TRANSFORMER=none`, `QUANTIZE_TEXT_ENCODER=none`), with vLLM stopped.** Memory is the image server's approximate share: the system-wide peak minus the other running services.
 
 | | Memory | Time |
 |---|---|---|
@@ -282,6 +282,24 @@ Measured on the DGX Spark (GB10) on 2026-10-18, running next to vLLM (`gpu-memor
 | `nvfp4` | transformer 14.23 GB (no saving) | did not complete (memory watchdog) | n/a | n/a | unsupported on GB10 with current libraries (F-7); dropped (D-8) |
 
 `int8` was chosen as the default (D-10): the same memory as `fp8`, about BF16 speed, exact lettering and an edit nearly identical to BF16. The 1K BF16 generate peak was never measured (it does not fit next to vLLM).
+
+### Qwen-Image-2.1-Turbo (spec 009)
+
+`IMAGE_MODEL=qwen_image_2_1_turbo` loads Qwen's official accelerated checkpoint [`Qwen/Qwen-Image-2.1-Turbo`](https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo) through the same backend, quantization and tools. The checkpoint carries a fixed 8-step schedule (`sample_sigmas`), so it is about 4.5x faster than the 40-step base model at the same memory. **It is the default (decision D-5, chosen by the operator from the A/B test below).** Notes:
+
+- **Fixed 8 steps.** `num_inference_steps` (and `MAX_INFERENCE_STEPS`) other than 8 are ignored and a warning is sent to the client. CFG stays at 1.0.
+- **Separate download.** The first start with the default downloads about 32 GB into the HuggingFace cache; no files are shared with the base checkpoint, so switching back with `IMAGE_MODEL=qwen_image_2_1` downloads the base weights if they are not cached.
+- **Getting the base model.** Set `IMAGE_MODEL=qwen_image_2_1` (40 steps, range 20-100).
+- `get_model_info` reports `model_id`, `model_name`, and `min_inference_steps` / `max_inference_steps`.
+
+**A/B results** (2026-10-18, GB10, both `int8`, next to vLLM, 1K outputs; G1 photo, G2 typography, G3 transparent sticker, E1 a 1024 edit):
+
+| | Weights | Load | Min available host memory, load / generate | G1 / G2 / G3 / E1 | Quality |
+|---|---|---|---|---|---|
+| Turbo int8 (vLLM at 0.54) | 18.54 GB (7.27 / 10.60 / 0.68) | 441 s, including the first ~32 GB download | 13.8 / 17.7 GB | 29.2 (first image, includes warm-up) / 14.5 / 13.5 / 17.2 s | exact "QWEN IMAGE 2.1" lettering; sticker 63.5% transparent; edit about equal to base |
+| Base int8 (spec 008, vLLM at 0.6) | 18.54 GB | 194 s | 10.2 / 14.6 GB | 77.5 / 62 / 62 / 71.6 s | same checks pass |
+
+Weights are transformer / text encoder / VAE in GB.
 
 ### Rebuilds and compile caches
 
