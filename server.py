@@ -88,8 +88,14 @@ def _startup_load_model() -> None:
 # ── Server — NO lifespan ──────────────────────────────────────────────────────
 # host and port are passed to FastMCP() constructor — NOT to run().
 # In mcp.server.fastmcp (official SDK), run() only accepts 'transport'.
+# streamable_http_path: MCP_PATH, also a constructor argument (FR-006-05).
 # json_response=True:  required for Streamable HTTP per official SDK docs.
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Transport-level worst case for edit_image: this many base64 references in one
+# request. Matches the largest reference limit of any backend (Qwen-Image-2.1: 10).
+# The server can't ask the model: it isn't loaded when FastMCP is constructed.
+MAX_REQUEST_REFERENCES = 10
 
 mcp = FastMCP(
     "local-image-gen",
@@ -98,7 +104,9 @@ mcp = FastMCP(
         "Call generate_image with a text prompt to create images (set "
         "transparent=true for a PNG with a real alpha channel). "
         "Call edit_image with an instruction and 1+ reference images to edit or "
-        "combine images; references are image_ids returned by earlier calls "
+        "combine images (the result keeps the last reference's aspect ratio at "
+        "about the server's edit_output_resolution, shown by get_model_info); "
+        "references are image_ids returned by earlier calls "
         "(preferred, no bytes move) or base64 strings, so edits can be chained "
         "by image_id. "
         "Use list_aspect_ratios to see supported output dimensions. "
@@ -109,6 +117,8 @@ mcp = FastMCP(
     json_response=True,
     host=settings.mcp_host,
     port=settings.mcp_port,
+    streamable_http_path=settings.mcp_path,
+    max_request_body_size=settings.effective_max_request_body_mb(MAX_REQUEST_REFERENCES) * 1024 * 1024,
 )
 
 
@@ -332,12 +342,16 @@ async def edit_image(
     Order matters: entry N is "Picture N" in your prompt, e.g. "Replace the
     background of Picture 1 with the scene from Picture 2". Mixing IDs and
     base64 is fine. Base64 references and the returned PNG are large payloads, so
-    use image IDs for chained edits. All references are validated before any
+    use image IDs for chained edits. The whole HTTP request (all base64
+    references plus JSON overhead) must fit MAX_REQUEST_BODY_MB (default 268 MB);
+    over that the server answers HTTP 413 before the tool runs. Prefer image IDs
+    for large or chained images. All references are validated before any
     model work; an error names the offending reference by 1-based position.
 
     Output size: with aspect_ratio omitted, the result matches the aspect ratio
-    of the LAST reference at about 2048x2048 pixel area. With aspect_ratio set,
-    the result uses that ratio's 2K size (see list_aspect_ratios).
+    of the LAST reference at about EDIT_OUTPUT_RESOLUTION^2 pixels of area (see
+    edit_output_resolution in get_model_info; default 1024). With aspect_ratio
+    set, the result uses that ratio's 2K size (see list_aspect_ratios).
 
     Guidance is OFF by default (cfg_scale=1.0, 40 steps). negative_prompt only
     takes effect when cfg_scale > 1; otherwise it is ignored and a warning is
@@ -443,8 +457,10 @@ def get_model_info() -> dict:
     """
     Return model metadata, capabilities, resolved defaults and GPU memory status.
 
-    Reports max_reference_images, supports_editing, supports_transparency and
-    the default steps/CFG that apply when you pass null (after env overrides).
+    Reports max_reference_images, supports_editing, supports_transparency,
+    edit_output_resolution (the edit size target as a side length in pixels;
+    null if editing is unsupported) and the default steps/CFG that apply when
+    you pass null (after env overrides).
     Useful for verifying the server is ready before requesting large images.
     """
     model = get_model()
@@ -473,6 +489,7 @@ def get_model_info() -> dict:
         "max_reference_images": model.max_reference_images,
         "supports_editing": model.supports_editing,
         "supports_transparency": model.supports_transparency,
+        "edit_output_resolution": model.edit_output_resolution,
         "supported_aspect_ratios": sorted(model.aspect_ratios),
         "images_generated": store.count(),
         "output_directory": settings.image_output_dir,

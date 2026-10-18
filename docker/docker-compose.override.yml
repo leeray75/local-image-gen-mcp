@@ -1,5 +1,9 @@
 # Override for DGX Spark stack integration
 # Usage: docker compose -f docker-compose.yml -f docker-compose.override.yml up -d
+#
+# The LiteLLM stack (project "ai-litellm-proxy") creates its "ai-bridge" network
+# with the project prefix, so the real network name is ai-litellm-proxy_ai-bridge.
+# Override with AI_BRIDGE_NETWORK if your stack uses a different name.
 services:
   local-image-gen-mcp:
     networks:
@@ -8,3 +12,4 @@ services:
 networks:
   ai-bridge:
     external: true
+    name: ${AI_BRIDGE_NETWORK:-ai-litellm-proxy_ai-bridge}

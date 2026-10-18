@@ -187,7 +187,7 @@ def test_generate_edit_kwargs(loaded):
     model.generate(_req(width=None, height=None, reference_images=[a, b]))
     kwargs = pipe.call_args.kwargs
     assert kwargs["image"] == [a, b] and kwargs["image"][0] is a
-    assert kwargs["output_resolution"] == 2048
+    assert kwargs["output_resolution"] == 1024
     assert "width" not in kwargs and "height" not in kwargs
 
 
@@ -197,4 +197,19 @@ def test_generate_edit_with_explicit_size(loaded):
     model.generate(_req(width=2048, height=2048, reference_images=[a]))
     kwargs = pipe.call_args.kwargs
     assert kwargs["width"] == 2048 and kwargs["height"] == 2048
-    assert kwargs["output_resolution"] == 2048
+    assert kwargs["output_resolution"] == 1024
+
+
+def test_edit_output_resolution_reaches_pipeline_for_edits_only():  # 006 AS-1
+    with patch("models.qwen_image_2_1.QwenImage21Pipeline") as MockPipeline:
+        pipe = MagicMock()
+        pipe.return_value.images = [PILImage.new("RGBA", (64, 48))]
+        MockPipeline.from_pretrained.return_value = pipe
+        model = QwenImage21(edit_output_resolution=1024)
+        model.load()
+        assert model.edit_output_resolution == 1024
+        a = PILImage.new("RGB", (10, 10), "red")
+        model.generate(_req(width=None, height=None, reference_images=[a]))
+        assert pipe.call_args.kwargs["output_resolution"] == 1024
+        model.generate(_req())
+        assert "output_resolution" not in pipe.call_args.kwargs

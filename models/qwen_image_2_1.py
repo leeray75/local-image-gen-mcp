@@ -6,8 +6,8 @@ images) and native transparent (RGBA) generation.
 
 Memory on GB10 unified memory (128GB):
   The weights are about 33GB in BF16; measured peaks are ~68GB for a 2K
-  generate and ~76GB for a 2K edit. This does NOT fit next to a running vLLM engine, so stop
-  vLLM first. IMAGE_GPU_MEMORY_LIMIT caps accelerate's device placement via
+  generate and ~40GB for an edit at the default 1024 edit resolution. This does
+  NOT fit next to a running vLLM engine, so stop vLLM first. IMAGE_GPU_MEMORY_LIMIT caps accelerate's device placement via
   max_memory, but offloaded layers live in the same physical RAM on unified
   memory, so the cap does not reduce total memory use.
 
@@ -32,7 +32,6 @@ class QwenImage21(BaseImageModel):
     """Qwen-Image-2.1 backend (text-to-image, editing, RGBA)."""
 
     MODEL_ID = "Qwen/Qwen-Image-2.1"
-    EDIT_OUTPUT_RESOLUTION = 2048
 
     # Native 2K sizes from the model card
     ASPECT_RATIOS: dict[str, tuple[int, int]] = {
@@ -55,9 +54,11 @@ class QwenImage21(BaseImageModel):
         self,
         torch_dtype_str: str = "bfloat16",
         memory_limit_gb: int | None = None,
+        edit_output_resolution: int = 1024,
     ) -> None:
         self._pipeline: QwenImage21Pipeline | None = None
         self._memory_limit_gb = memory_limit_gb
+        self._edit_output_resolution = edit_output_resolution
         self._torch_dtype = (
             torch.bfloat16 if torch_dtype_str == "bfloat16" else torch.float32
         )
@@ -117,7 +118,7 @@ class QwenImage21(BaseImageModel):
             )
             log.warning(
                 "No memory cap — model will use ~33GB weights plus activations "
-                "(~68-76GB peak at 2K). Stop vLLM before starting image generation."
+                "(~68GB peak for a 2K generate). Stop vLLM before starting image generation."
             )
 
         self._pipeline = QwenImage21Pipeline.from_pretrained(
@@ -189,7 +190,7 @@ class QwenImage21(BaseImageModel):
             kwargs["negative_prompt"] = request.negative_prompt
         if request.reference_images:
             kwargs["image"] = list(request.reference_images)
-            kwargs["output_resolution"] = self.EDIT_OUTPUT_RESOLUTION
+            kwargs["output_resolution"] = self._edit_output_resolution
         if request.width is not None and request.height is not None:
             kwargs["width"] = request.width
             kwargs["height"] = request.height
@@ -251,6 +252,10 @@ class QwenImage21(BaseImageModel):
     @property
     def max_reference_images(self) -> int:
         return 10
+
+    @property
+    def edit_output_resolution(self) -> int:
+        return self._edit_output_resolution
 
     @property
     def supports_transparency(self) -> bool:

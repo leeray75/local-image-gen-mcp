@@ -3,12 +3,6 @@ FROM nvcr.io/nvidia/pytorch:26.04-py3
 
 WORKDIR /app
 
-COPY pyproject.toml .
-COPY server.py .
-COPY models/ ./models/
-COPY config/ ./config/
-COPY storage/ ./storage/
-
 # Install dependencies directly to system Python to use NVIDIA's optimized torch/CUDA
 RUN PIP_CONSTRAINT="" pip install --no-cache-dir \
     "mcp[cli]>=1.27.0,<2" \
@@ -20,6 +14,14 @@ RUN PIP_CONSTRAINT="" pip install --no-cache-dir \
     "safetensors>=0.5.3" \
     "pillow==11.1.0" \
     "huggingface-hub>=0.32.0"
+
+# App source is copied AFTER the dependency layer, so code-only changes rebuild
+# in seconds without reinstalling the dependencies (FR-006-04).
+COPY pyproject.toml .
+COPY server.py .
+COPY models/ ./models/
+COPY config/ ./config/
+COPY storage/ ./storage/
 
 RUN mkdir -p /outputs
 

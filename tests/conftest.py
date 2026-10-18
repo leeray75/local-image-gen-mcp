@@ -9,5 +9,6 @@ import tempfile
 
 os.environ.setdefault("IMAGE_OUTPUT_DIR", tempfile.mkdtemp(prefix="imggen-test-"))
 # Keep the developer's/CI environment from skewing default resolution
-for _var in ("MAX_INFERENCE_STEPS", "DEFAULT_CFG_SCALE", "IMAGE_GPU_MEMORY_LIMIT"):
+for _var in ("MAX_INFERENCE_STEPS", "DEFAULT_CFG_SCALE", "IMAGE_GPU_MEMORY_LIMIT",
+             "EDIT_OUTPUT_RESOLUTION"):
     os.environ.pop(_var, None)

@@ -22,6 +22,7 @@ def load_model() -> BaseImageModel:
         return QwenImage21(
             torch_dtype_str=settings.torch_dtype,
             memory_limit_gb=settings.image_gpu_memory_limit,
+            edit_output_resolution=settings.edit_output_resolution,
         )
 
     raise ValueError(

@@ -109,6 +109,11 @@ class BaseImageModel(ABC):
         return False
 
     @property
+    def edit_output_resolution(self) -> int | None:
+        """Pixel-area target (side length) for edits, or None if editing is unsupported."""
+        return None
+
+    @property
     def supports_editing(self) -> bool:
         """True if the backend accepts reference images."""
         return self.max_reference_images > 0

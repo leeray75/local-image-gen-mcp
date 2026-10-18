@@ -26,6 +26,9 @@ class FakeModel(BaseImageModel):
     RATIOS = {"1:1": (64, 64), "16:9": (96, 54), "9:16": (54, 96), "4:3": (64, 48),
               "3:4": (48, 64), "3:2": (60, 40), "2:3": (40, 60)}
 
+    @property
+    def edit_output_resolution(self): return 1024 if self._editing else None
+
     def __init__(self, editing=True, transparency=True, delay=0.0):
         self.requests: list[GenerationRequest] = []
         self._editing, self._transparency, self._delay = editing, transparency, delay
@@ -128,8 +131,9 @@ def test_tool_docstrings_cover_contract():
     gen = server.generate_image.__doc__
     edit = server.edit_image.__doc__
     for doc in (gen, edit):
-        assert "cfg_scale > 1" in doc and "transparent" in doc and "2048" in doc
+        assert "cfg_scale > 1" in doc and "transparent" in doc
         assert "base64" in doc and "image ID" in doc
+    assert "2048" in gen and "default 1024" in edit
     assert "Picture" in edit and "1-10" in edit
 
 
@@ -307,6 +311,7 @@ def test_get_model_info(fake):
     assert (info["default_inference_steps"], info["default_cfg_scale"]) == (40, 1.0)
     assert info["has_default_negative_prompt"] is False
     assert info["supported_aspect_ratios"] == sorted(fake.RATIOS)
+    assert info["edit_output_resolution"] == 1024  # 006 AS-3
 
 
 def test_get_model_info_resolved_with_env(fake, monkeypatch):
@@ -401,3 +406,120 @@ def test_settings_memory_limit_reaches_backend(monkeypatch):  # AS-13
         models.load_model().load()
     kwargs = P.from_pretrained.call_args.kwargs
     assert kwargs["max_memory"][0] == "30GiB" and kwargs["device_map"] == "balanced"
+
+
+# ── 006: settings, transport path, 003 AS-1..AS-4 ─────────────────────────────
+
+def test_edit_output_resolution_default_and_valid(monkeypatch):
+    monkeypatch.delenv("EDIT_OUTPUT_RESOLUTION", raising=False)
+    assert Settings(_env_file=None).edit_output_resolution == 1024
+    monkeypatch.setenv("EDIT_OUTPUT_RESOLUTION", "2048")
+    assert Settings(_env_file=None).edit_output_resolution == 2048
+    monkeypatch.setenv("EDIT_OUTPUT_RESOLUTION", "512")
+    assert Settings(_env_file=None).edit_output_resolution == 512
+
+
+@pytest.mark.parametrize("value", ["1000", "256", "4096"])
+def test_edit_output_resolution_invalid(monkeypatch, value):  # 006 AS-2
+    monkeypatch.setenv("EDIT_OUTPUT_RESOLUTION", value)
+    with pytest.raises(Exception):
+        Settings(_env_file=None)
+
+
+def test_edit_output_resolution_empty_is_default(monkeypatch):  # 006 AS-2
+    monkeypatch.setenv("EDIT_OUTPUT_RESOLUTION", "")
+    assert Settings(_env_file=None).edit_output_resolution == 1024
+
+
+def test_edit_output_resolution_reaches_backend(monkeypatch):
+    import models
+    import config.settings as cs
+    monkeypatch.setenv("EDIT_OUTPUT_RESOLUTION", "1024")
+    monkeypatch.setattr(cs, "settings", Settings(_env_file=None))
+    assert models.load_model().edit_output_resolution == 1024
+
+
+def test_streamable_http_path_follows_settings():  # 006 AS-4
+    assert server.mcp.settings.streamable_http_path == server.settings.mcp_path
+
+
+def test_latest_image_id_returns_newest(fake):  # 003 AS-1
+    a = server.store.save(PILImage.new("RGB", (4, 4)), {"prompt": "first"})
+    b = server.store.save(PILImage.new("RGB", (4, 4)), {"prompt": "second"})
+    assert server.get_latest_image_id()["image_id"] == b.image_id != a.image_id
+
+
+def test_latest_image_id_empty_store(fake):  # 003 AS-2
+    with pytest.raises(RuntimeError, match="Call generate_image first"):
+        server.get_latest_image_id()
+
+
+async def test_image_base64_is_byte_identical(fake, ctx):  # 003 AS-3
+    await server.generate_image("p", ctx=ctx)
+    stored = server.store.get(server.get_latest_image_id()["image_id"])
+    b64 = await server.get_image_base64(stored.image_id)
+    assert base64.b64decode(b64) == stored.disk_path.read_bytes()
+
+
+async def test_image_base64_unknown_id(fake):  # 003 AS-4
+    with pytest.raises(KeyError, match="not found"):
+        await server.get_image_base64("00000000-0000-0000-0000-000000000000")
+
+
+def test_get_model_raises_before_load(monkeypatch):  # 001 T014
+    monkeypatch.setattr(server, "_model", None)
+    with pytest.raises(RuntimeError, match="not loaded"):
+        server.get_model()
+
+
+# ── 006 F-4: request body limit ───────────────────────────────────────────────
+
+def test_request_body_default_is_computed(monkeypatch):
+    for v in ("MAX_REQUEST_BODY_MB", "MAX_REFERENCE_IMAGE_MB"):
+        monkeypatch.delenv(v, raising=False)
+    s = Settings(_env_file=None)
+    assert s.max_request_body_mb is None
+    assert s.effective_max_request_body_mb(10) == 268
+    monkeypatch.setenv("MAX_REFERENCE_IMAGE_MB", "30")
+    assert Settings(_env_file=None).effective_max_request_body_mb(10) == 401
+
+
+def test_request_body_explicit_override(monkeypatch):
+    monkeypatch.setenv("MAX_REQUEST_BODY_MB", "50")
+    assert Settings(_env_file=None).effective_max_request_body_mb(10) == 50
+
+
+def test_request_body_validation(monkeypatch):
+    monkeypatch.setenv("MAX_REQUEST_BODY_MB", "3")
+    with pytest.raises(Exception):
+        Settings(_env_file=None)
+    monkeypatch.setenv("MAX_REQUEST_BODY_MB", "")
+    s = Settings(_env_file=None)
+    assert s.max_request_body_mb is None and s.effective_max_request_body_mb(10) == 268
+
+
+def test_fastmcp_receives_body_limit_in_bytes():
+    expected = server.settings.effective_max_request_body_mb(
+        server.MAX_REQUEST_REFERENCES) * 1024 * 1024
+    assert server.mcp.settings.max_request_body_size == expected
+    assert expected > 4 * 1024 * 1024
+
+
+async def test_body_over_4mib_is_not_rejected_with_413():
+    """HTTP level (F-4): direct tool calls bypass the transport's size check."""
+    import httpx
+    app = server.mcp.streamable_http_app()
+    body = b"x" * (5 * 1024 * 1024)
+    headers = {"content-type": "application/json",
+               "accept": "application/json, text/event-stream"}
+    # ASGITransport doesn't run lifespans; start the session manager by hand
+    # (its run() may be entered only once per process, so keep this the only user).
+    async with server.mcp.session_manager.run(), httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://localhost:8500"
+    ) as client:
+        r = await client.post(server.settings.mcp_path, content=body, headers=headers)
+        assert r.status_code != 413
+        # control: past the limit the SDK does answer 413
+        too_big = b"x" * (server.mcp.settings.max_request_body_size + 1)
+        r = await client.post(server.settings.mcp_path, content=too_big, headers=headers)
+        assert r.status_code == 413

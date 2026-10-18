@@ -10,6 +10,11 @@ services:
     volumes:
       - ~/.cache/huggingface:/root/.cache/huggingface
       - image-outputs:/outputs
+      # Compile caches survive container recreation (FR-006-11). Two separate
+      # volumes (not subpaths of one: Docker fails to mount a subpath that does
+      # not exist yet), and ~/.cache/huggingface above is not shadowed.
+      - image-gen-cuda-cache:/root/.nv
+      - image-gen-torch-cache:/root/.cache/torch
     environment:
       HF_TOKEN: ${HF_TOKEN}
       HF_HOME: /root/.cache/huggingface
@@ -19,6 +24,8 @@ services:
       IMAGE_OUTPUT_DIR: /outputs
       TORCH_DTYPE: "bfloat16"
       IMAGE_GPU_MEMORY_LIMIT: "40"
+      # Empty = server default (see EDIT_OUTPUT_RESOLUTION in .env.example)
+      EDIT_OUTPUT_RESOLUTION: ${EDIT_OUTPUT_RESOLUTION:-}
     deploy:
       resources:
         reservations:
@@ -42,3 +49,5 @@ services:
 
 volumes:
   image-outputs:
+  image-gen-cuda-cache:
+  image-gen-torch-cache:
