@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-18
+
 ### Added
 - **Qwen-Image-2.1-Turbo backend** ([spec 009](docs/specs/009-qwen-image-2-1-turbo/spec.md)): `IMAGE_MODEL=qwen_image_2_1_turbo` loads the official 8-step `Qwen/Qwen-Image-2.1-Turbo` checkpoint (~32 GB separate download) through the same backend, quantization and tools. It is now the default (see Changed). Step limits now come from the backend (`min_inference_steps`, `max_inference_steps`; base 20-100, Turbo fixed 8) instead of server constants, and a Turbo request for another step count runs 8 steps and sends a warning. `get_model_info` adds `model_id`, `min_inference_steps` and `max_inference_steps`. Compose now passes `IMAGE_MODEL` from the environment (`${IMAGE_MODEL:-qwen_image_2_1}`)
 - **Load-time weight quantization** ([spec 008](docs/specs/008-load-time-quantization/spec.md)): `QUANTIZE_TRANSFORMER` and `QUANTIZE_TEXT_ENCODER` (`auto`, `none`, `int8`, `fp8`, `nvfp4`; default `auto`; empty = `auto`) quantize the official Qwen weights while loading, one setting per component, via a diffusers `PipelineQuantizationConfig` (torchao for int8/fp8, NVIDIA ModelOpt for the image model's nvfp4, a torchao prototype config for the text encoder's nvfp4). The VAE, the text encoder's vision tower and `lm_head`, and the image model's input/output, timestep, modulation and norm layers stay BF16. An unsupported mode fails startup with an error naming both modes, and an explicit `int8`, `fp8` or `nvfp4` fails on CPU (`auto` resolves to `none` there)
