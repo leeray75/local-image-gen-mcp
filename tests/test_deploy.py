@@ -49,3 +49,9 @@ def test_override_network_is_external_with_default_name():  # 006 F-3
 def test_restart_policy_is_no(compose):
     # YAML 1.1 parses an unquoted `no` as False
     assert compose["services"]["local-image-gen-mcp"]["restart"] in ("no", False)
+
+
+def test_compose_passes_resolution_settings_through(compose):  # 007 FR-007-08
+    env = compose["services"]["local-image-gen-mcp"]["environment"]
+    for var in ("GENERATE_OUTPUT_RESOLUTION", "MAX_OUTPUT_RESOLUTION", "EDIT_OUTPUT_RESOLUTION"):
+        assert env[var] == "${%s:-}" % var

@@ -6,7 +6,7 @@ No values are hardcoded — defaults are provided for local development.
 
 import math
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 from typing import Literal
 
@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Pixel-area target for edit_image output (the pipeline's output_resolution).
     # Default 1024: the 006 A/B test found 2048 edits artifacted (research R-1).
     edit_output_resolution: int = 1024
+    # Pixel-area target for generate_image output (spec 007). Default 1024.
+    generate_output_resolution: int = 1024
+    # Ceiling for both resolutions above; startup fails if either exceeds it.
+    max_output_resolution: int = 1024
     torch_dtype: Literal["bfloat16", "float32"] = "bfloat16"
 
     # HuggingFace — from environment only, never hardcoded
@@ -53,20 +57,37 @@ class Settings(BaseSettings):
         """Treat an empty env string (e.g. from compose) as unset."""
         return None if v == "" else v
 
-    @field_validator("edit_output_resolution", mode="before")
-    @classmethod
-    def _empty_to_default(cls, v):
-        """Treat an empty env string as 'use the default'."""
-        return cls.model_fields["edit_output_resolution"].default if v == "" else v
+    _RESOLUTION_FIELDS = (
+        "edit_output_resolution", "generate_output_resolution", "max_output_resolution",
+    )
 
-    @field_validator("edit_output_resolution")
+    @field_validator(*_RESOLUTION_FIELDS, mode="before")
     @classmethod
-    def _check_edit_resolution(cls, v: int) -> int:
+    def _empty_to_default(cls, v, info):
+        """Treat an empty env string as 'use the default'."""
+        return cls.model_fields[info.field_name].default if v == "" else v
+
+    @field_validator(*_RESOLUTION_FIELDS)
+    @classmethod
+    def _check_resolution(cls, v: int, info) -> int:
         if v % 32 != 0 or not 512 <= v <= 2048:
             raise ValueError(
-                "EDIT_OUTPUT_RESOLUTION must be a multiple of 32 between 512 and 2048"
+                f"{info.field_name.upper()} must be a multiple of 32 between 512 and 2048"
             )
         return v
+
+    @model_validator(mode="after")
+    def _check_ceiling(self) -> "Settings":
+        """Refuse to start when a resolution setting exceeds MAX_OUTPUT_RESOLUTION."""
+        for name in ("generate_output_resolution", "edit_output_resolution"):
+            value = getattr(self, name)
+            if value > self.max_output_resolution:
+                raise ValueError(
+                    f"{name.upper()}={value} exceeds "
+                    f"MAX_OUTPUT_RESOLUTION={self.max_output_resolution}; "
+                    "raise MAX_OUTPUT_RESOLUTION to allow it"
+                )
+        return self
 
     @field_validator("max_request_body_mb")
     @classmethod

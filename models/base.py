@@ -80,6 +80,11 @@ class BaseImageModel(ABC):
         """Mapping of aspect-ratio key to (width, height) in pixels."""
         ...
 
+    @abstractmethod
+    def sizes_for(self, resolution: int) -> dict[str, tuple[int, int]]:
+        """Mapping of aspect-ratio key to (width, height) for a target side length."""
+        ...
+
     @property
     @abstractmethod
     def default_inference_steps(self) -> int:
