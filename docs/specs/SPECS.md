@@ -35,9 +35,10 @@ code + tests   Every requirement ID must map to code and (where testable) a test
 | [002](002-container-deployment/spec.md) | Container deployment on DGX Spark (Dockerfile, compose, healthcheck, ai-bridge) | 0.1.0 → 0.1.1 | Implemented | `plans/implementation.md` (Tasks 10–12), `reports/bugfix-v0.1.1-summary.md` |
 | [003](003-image-retrieval-tools/spec.md) | Client-side image retrieval tools (`get_image_base64`, `get_latest_image_id`) | Unreleased | Implemented, committed | `plans/add-tools.md`, `reports/uncommitted-changes-report.md` |
 | [004](004-memory-bounded-loading/spec.md) | Memory-bounded model loading for coexistence with vLLM | Unreleased | Implemented, committed | Commit `7258331` (the `models/qwen_image_2512.py` part was later replaced by 005) |
-| [005](005-qwen-image-2-1/spec.md) | Upgrade to Qwen-Image-2.1 (native 2K text-to-image, `edit_image`, RGBA, serialization, settings cleanup) | Unreleased (breaking) | Implemented, GPU-verified (F-1 resolved by 006; F-2 open) | Branch `feature/qwen-image-2-1` |
+| [005](005-qwen-image-2-1/spec.md) | Upgrade to Qwen-Image-2.1 (native 2K text-to-image, `edit_image`, RGBA, serialization, settings cleanup) | Unreleased (breaking) | Implemented, GPU-verified (F-1 resolved by 006; F-2 resolved by 008) | Branch `feature/qwen-image-2-1` |
 | [006](006-open-items-closeout/spec.md) | Open items close-out and 0.2.0 release (`EDIT_OUTPUT_RESOLUTION`, `MCP_PATH`, Dockerfile layer order, compile-cache volumes, A/B test, GPU acceptance) | 0.2.0 | Implemented, GPU-verified (2026-10-18) | [spec 005 open items](005-qwen-image-2-1/spec.md), operator questions 2026-10-18 |
 | [007](007-1k-default-resolution/spec.md) | 1K default resolution and output-size ceiling (`GENERATE_OUTPUT_RESOLUTION`, `MAX_OUTPUT_RESOLUTION`, F-5 fix) | Unreleased (breaking) | Implemented, unit-tested; GPU A/B deferred (D-5) | [006 results](006-open-items-closeout/spec.md), operator decisions 2026-10-18 |
+| [008](008-load-time-quantization/spec.md) | Load-time weight quantization (`QUANTIZE_TRANSFORMER`, `QUANTIZE_TEXT_ENCODER`: int8, fp8, nvfp4) | Unreleased | Implemented and GPU-verified next to vLLM (2026-10-18); default `auto` = int8 on CUDA (18.5 GB vs 32.4 GB BF16) | [005 F-2](005-qwen-image-2-1/spec.md), operator decisions 2026-10-18 |
 
 ## Document index
 
@@ -51,6 +52,7 @@ code + tests   Every requirement ID must map to code and (where testable) a test
 | [005 spec](005-qwen-image-2-1/spec.md) · [research](005-qwen-image-2-1/research.md) · [data model](005-qwen-image-2-1/data-model.md) · [contracts](005-qwen-image-2-1/contracts/mcp-interface.md) · [plan](005-qwen-image-2-1/plan.md) · [tasks](005-qwen-image-2-1/tasks.md) | Qwen-Image-2.1 upgrade |
 | [006 spec](006-open-items-closeout/spec.md) · [research](006-open-items-closeout/research.md) · [plan](006-open-items-closeout/plan.md) · [tasks](006-open-items-closeout/tasks.md) | Close-out and 0.2.0 |
 | [007 spec](007-1k-default-resolution/spec.md) · [research](007-1k-default-resolution/research.md) · [plan](007-1k-default-resolution/plan.md) · [tasks](007-1k-default-resolution/tasks.md) | 1K default and ceiling |
+| [008 spec](008-load-time-quantization/spec.md) · [research](008-load-time-quantization/research.md) · [plan](008-load-time-quantization/plan.md) · [tasks](008-load-time-quantization/tasks.md) | Load-time quantization |
 
 ## Conventions
 
@@ -80,4 +82,4 @@ Collected from the traceability tables in each spec. These are the places where 
 | ~~Manual GPU acceptance (001 AS-2, AS-5; 002 AS-1–AS-6; 003 T007) not yet run~~ — closed by 006 (all pass, 2026-10-18) | 001, 002, 003 | FR-006-10 |
 | ~~`edit_image` with an explicit `aspect_ratio` used the 2K table~~ — closed by 007 (FR-007-05) | 005 | F-5 |
 | 1K vs 2K text-to-image A/B and measured 1K peak memory not yet run (deferred, vLLM kept up) | 007 | AS-6 – AS-8, D-5 |
-| F-2: memory footprint and coexisting with vLLM (out of scope by operator decision) | 005 | F-2 |
+| ~~F-2: the image server can't run next to vLLM~~ — closed by 008: int8/int8 (the default on CUDA) runs next to vLLM at 0.6 with ≥ ~10 GB free during load and ~15 GB during generation | 005, 008 | F-2, 008 AS-6 |

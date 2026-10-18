@@ -69,6 +69,14 @@ class BaseImageModel(ABC):
         ...
 
     @property
+    def quantization_info(self) -> dict:
+        """Active weight quantization and measured weight memory (spec 008).
+
+        Backends that do not quantize return an empty dict.
+        """
+        return {}
+
+    @property
     @abstractmethod
     def model_name(self) -> str:
         """Human-readable model identifier."""

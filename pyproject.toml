@@ -1,6 +1,6 @@
 [project]
 name = "local-image-gen-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Model-agnostic MCP server for local text-to-image generation"
 requires-python = ">=3.11"
 dependencies = [

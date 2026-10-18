@@ -24,6 +24,8 @@ def load_model() -> BaseImageModel:
             memory_limit_gb=settings.image_gpu_memory_limit,
             edit_output_resolution=settings.edit_output_resolution,
             generate_output_resolution=settings.generate_output_resolution,
+            quantize_transformer=settings.quantize_transformer,
+            quantize_text_encoder=settings.quantize_text_encoder,
         )
 
     raise ValueError(

@@ -7,10 +7,21 @@ images) and native transparent (RGBA) generation.
 Memory on GB10 unified memory (128GB):
   The weights are about 33GB in BF16; measured peaks are ~68GB for a 2K
   generate and ~40GB for an edit at 1024 (the default text-to-image size is
-  1024 too since spec 007; its peak is estimated at or below ~40GB). This does
-  NOT fit next to a running vLLM engine, so stop vLLM first. IMAGE_GPU_MEMORY_LIMIT caps accelerate's device placement via
+  1024 too since spec 007; its peak is estimated at or below ~40GB). In BF16 this
+  does NOT fit next to a running vLLM engine, so stop vLLM first. The default int8
+  quantization (spec 008, `auto` on CUDA) cuts the weights to ~18.5GB, which does
+  fit next to vLLM. IMAGE_GPU_MEMORY_LIMIT caps accelerate's device placement via
   max_memory, but offloaded layers live in the same physical RAM on unified
   memory, so the cap does not reduce total memory use.
+
+Quantization (spec 008):
+  QUANTIZE_TRANSFORMER / QUANTIZE_TEXT_ENCODER (none|int8|fp8|nvfp4) quantize
+  the official weights at load time, one setting per component, through a
+  diffusers PipelineQuantizationConfig. Default auto = int8 on CUDA, none
+  (BF16) on CPU; set none explicitly for BF16 on CUDA. The VAE is never
+  quantized. See _build_quantization_config() and research.md R-5. With any
+  quantization on, components load one at a time with memory freed between
+  them (spec 008 F-6, research R-6); with none/none loading is unchanged.
 
 Meta-tensor rule:
   Pass device_map to from_pretrained() and NEVER call .to(device) afterwards:
@@ -18,12 +29,14 @@ Meta-tensor rule:
   NotImplementedError: Cannot copy out of meta tensor.
 """
 
+import gc
 import logging
 import math
 import time
 
 import torch
-from diffusers import QwenImage21Pipeline
+from diffusers import QwenImage21Pipeline, QwenImage21Transformer2DModel
+from transformers import Qwen3VLForConditionalGeneration
 
 from .base import BaseImageModel, GenerationRequest, GenerationResult
 
@@ -52,6 +65,17 @@ class QwenImage21(BaseImageModel):
         "2:3": (2, 3), "16:9": (16, 9), "9:16": (9, 16),
     }
 
+    # Quantization modes (spec 008) and the layers kept in BF16 (research R-5).
+    QUANT_MODES = ("auto", "none", "int8", "fp8", "nvfp4")
+    # What "auto" resolves to on CUDA (spec 008 D-10); on CPU it resolves to "none"
+    AUTO_CUDA_MODE = "int8"
+    # diffusers torchao skips by substring "name.", ModelOpt by "*name*"
+    TRANSFORMER_SKIP_MODULES = (
+        "img_in", "txt_in", "time_text_embed", "modulation", "norm_out", "proj_out",
+    )
+    # transformers has no default skips once a list is given, so lm_head is explicit
+    TEXT_ENCODER_SKIP_MODULES = ("model.visual", "lm_head")
+
     # Phrasing from the model card for native RGBA generation
     TRANSPARENT_PROMPT = (
         "This is an RGBA image with transparency. {prompt} "
@@ -64,7 +88,24 @@ class QwenImage21(BaseImageModel):
         memory_limit_gb: int | None = None,
         edit_output_resolution: int = 1024,
         generate_output_resolution: int = 1024,
+        quantize_transformer: str = "auto",
+        quantize_text_encoder: str = "auto",
     ) -> None:
+        for name, mode in (
+            ("quantize_transformer", quantize_transformer),
+            ("quantize_text_encoder", quantize_text_encoder),
+        ):
+            if mode not in self.QUANT_MODES:
+                raise ValueError(
+                    f"{name}={mode!r} is invalid; must be one of {self.QUANT_MODES}"
+                )
+        self._configured_transformer = quantize_transformer
+        self._configured_text_encoder = quantize_text_encoder
+        # "auto" resolves here, from the same CUDA check that sets self._device
+        auto = self.AUTO_CUDA_MODE if torch.cuda.is_available() else "none"
+        self._quantize_transformer = auto if quantize_transformer == "auto" else quantize_transformer
+        self._quantize_text_encoder = auto if quantize_text_encoder == "auto" else quantize_text_encoder
+        self._weight_memory_gb: dict[str, float] | None = None
         self._pipeline: QwenImage21Pipeline | None = None
         self._memory_limit_gb = memory_limit_gb
         self._edit_output_resolution = edit_output_resolution
@@ -75,6 +116,199 @@ class QwenImage21(BaseImageModel):
         # Used only for the Generator seed — device_map handles actual placement
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # ── Staged loading (spec 008 FR-008-10, FR-008-12) ────────────────────────
+
+    @staticmethod
+    def _host_available_gb() -> float | None:
+        """Host MemAvailable from /proc/meminfo in GB, or None if unreadable."""
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return round(int(line.split()[1]) / 1048576, 2)
+        except (OSError, ValueError, IndexError):
+            pass
+        return None
+
+    def _log_memory(self, stage: str) -> None:
+        """Log CUDA allocated/reserved and host MemAvailable after a load step."""
+        if torch.cuda.is_available():
+            allocated = round(torch.cuda.memory_allocated(0) / 1e9, 2)
+            reserved = round(torch.cuda.memory_reserved(0) / 1e9, 2)
+        else:
+            allocated = reserved = None
+        log.info(
+            "Memory after %s — CUDA allocated: %s GB, reserved: %s GB, "
+            "host available: %s GB",
+            stage, allocated, reserved, self._host_available_gb(),
+        )
+
+    def _free_memory(self) -> None:
+        """Drop Python garbage and return cached CUDA blocks (on unified memory,
+        host RAM) before the next component loads."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _load_staged(self, quantization_config):
+        """Load transformer, then text encoder, then the pipeline (FR-008-10).
+
+        Each component is loaded on its own so that loading buffers of one are
+        released before the next starts (F-6). Components set to "none" take the
+        same path in BF16. Placement: device_map={"": 0} per component and
+        "cuda" for the rest of the pipeline; never .to() afterwards (research R-6).
+        """
+        mapping = quantization_config.quant_mapping
+        modes = {
+            "transformer": self._quantize_transformer,
+            "text_encoder": self._quantize_text_encoder,
+        }
+        device_map = {"": 0}
+        loaded = {}
+        stage = "start"
+
+        def fail(err: Exception) -> RuntimeError:
+            return RuntimeError(
+                "Failed to load Qwen-Image-2.1 with quantization "
+                f"(transformer={self._quantize_transformer}, "
+                f"text_encoder={self._quantize_text_encoder}) "
+                f"while loading {stage}: {type(err).__name__}: {err}"
+            )
+
+        self._log_memory("start")
+        try:
+            for name, cls in (
+                ("transformer", QwenImage21Transformer2DModel),
+                ("text_encoder", Qwen3VLForConditionalGeneration),
+            ):
+                stage = f"{name} ({modes[name]})"
+                kw = {"subfolder": name, "dtype": self._torch_dtype, "device_map": device_map}
+                if name in mapping:
+                    kw["quantization_config"] = mapping[name]
+                loaded[name] = cls.from_pretrained(self.MODEL_ID, **kw)
+                self._free_memory()
+                self._log_memory(stage)
+
+            stage = "pipeline (remaining components)"
+            pipeline = QwenImage21Pipeline.from_pretrained(
+                self.MODEL_ID,
+                transformer=loaded["transformer"],
+                text_encoder=loaded["text_encoder"],
+                dtype=self._torch_dtype,
+                device_map="cuda",
+            )
+            self._log_memory(stage)
+            return pipeline
+        except Exception as err:
+            raise fail(err) from err
+
+    def _build_quantization_config(self):
+        """Build the pipeline quantization config, or None when nothing is quantized.
+
+        One entry per quantized component in a diffusers PipelineQuantizationConfig;
+        components set to "none" are left out and stay BF16. The VAE is never
+        quantized. The quantization libraries are imported here, lazily, so
+        importing this module needs neither torchao nor ModelOpt. The calls were
+        verified against the installed versions (research R-5).
+        """
+        if self._quantize_transformer == "none" and self._quantize_text_encoder == "none":
+            return None
+
+        from diffusers import NVIDIAModelOptConfig, PipelineQuantizationConfig
+        from diffusers import TorchAoConfig as DiffusersTorchAoConfig
+        from transformers import TorchAoConfig as TransformersTorchAoConfig
+
+        # Fresh lists each time: the diffusers quantizers extend them in place
+        mapping = {}
+
+        mode = self._quantize_transformer
+        if mode == "nvfp4":
+            mapping["transformer"] = NVIDIAModelOptConfig(
+                quant_type="NVFP4",
+                weight_only=True,
+                modules_to_not_convert=list(self.TRANSFORMER_SKIP_MODULES),
+            )
+        elif mode != "none":
+            mapping["transformer"] = DiffusersTorchAoConfig(
+                self._torchao_config(mode),
+                modules_to_not_convert=list(self.TRANSFORMER_SKIP_MODULES),
+            )
+
+        mode = self._quantize_text_encoder
+        if mode != "none":
+            mapping["text_encoder"] = TransformersTorchAoConfig(
+                self._torchao_config(mode),
+                modules_to_not_convert=list(self.TEXT_ENCODER_SKIP_MODULES),
+            )
+
+        return PipelineQuantizationConfig(quant_mapping=mapping)
+
+    @staticmethod
+    def _torchao_config(mode: str):
+        """The torchao weight-only config for a mode (lazy import)."""
+        if mode == "int8":
+            from torchao.quantization import Int8WeightOnlyConfig
+            return Int8WeightOnlyConfig()
+        if mode == "fp8":
+            from torchao.quantization import Float8WeightOnlyConfig
+            return Float8WeightOnlyConfig()
+        if mode == "nvfp4":
+            # torchao prototype API (may change between releases)
+            from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
+            return NVFP4WeightOnlyConfig()
+        raise ValueError(f"No torchao config for mode {mode!r}")
+
+    @staticmethod
+    def _tensor_nbytes(t: torch.Tensor) -> int:
+        """Bytes a tensor really stores, looking inside torchao tensor subclasses."""
+        if hasattr(t, "__tensor_flatten__"):
+            names, _ = t.__tensor_flatten__()
+            return sum(QwenImage21._tensor_nbytes(getattr(t, n)) for n in names)
+        return t.numel() * t.element_size()
+
+    @classmethod
+    def _module_gb(cls, module) -> float:
+        """Stored size of a module's parameters and buffers, in GB."""
+        seen: set[int] = set()
+        total = 0
+        for t in [*module.parameters(), *module.buffers()]:
+            if id(t) not in seen:
+                seen.add(id(t))
+                total += cls._tensor_nbytes(t)
+        return round(total / 1e9, 2)
+
+    def _measure_weights(self) -> None:
+        """Record and log the per-component weight memory as stored (FR-008-06)."""
+        sizes = {}
+        for name in ("transformer", "text_encoder", "vae"):
+            try:
+                sizes[name] = self._module_gb(getattr(self._pipeline, name))
+            except Exception as err:  # measurement must never fail a load
+                log.warning("Could not measure %s weight size: %s", name, err)
+        self._weight_memory_gb = sizes or None
+        log.info(
+            "Quantization: transformer=%s, text_encoder=%s, vae=none. "
+            "Weights as stored (GB): %s",
+            self._quantize_transformer,
+            self._quantize_text_encoder,
+            sizes,
+        )
+
+    @property
+    def quantization_info(self) -> dict:
+        """Active modes and measured per-component weight memory (FR-008-07)."""
+        info = {
+            "quantize_transformer": self._quantize_transformer,
+            "quantize_text_encoder": self._quantize_text_encoder,
+            "weight_memory_gb": self._weight_memory_gb,
+        }
+        # The configured value is shown only where it differs (i.e. "auto")
+        if self._configured_transformer != self._quantize_transformer:
+            info["configured_quantize_transformer"] = self._configured_transformer
+        if self._configured_text_encoder != self._quantize_text_encoder:
+            info["configured_quantize_text_encoder"] = self._configured_text_encoder
+        return info
+
     def load(self) -> None:
         """Load model weights into GPU/unified memory.
 
@@ -84,6 +318,43 @@ class QwenImage21(BaseImageModel):
         if self._pipeline is not None:
             log.warning("Model already loaded — skipping")
             return
+
+        log.info(
+            "Quantization modes: transformer=%s (configured %s), "
+            "text_encoder=%s (configured %s)",
+            self._quantize_transformer, self._configured_transformer,
+            self._quantize_text_encoder, self._configured_text_encoder,
+        )
+        quantizing = (
+            self._quantize_transformer != "none"
+            or self._quantize_text_encoder != "none"
+        )
+        # CPU guard first, so a missing quantization library cannot pre-empt it
+        if self._device == "cpu" and quantizing:
+            raise RuntimeError(
+                "Weight quantization (QUANTIZE_TRANSFORMER="
+                f"{self._quantize_transformer}, QUANTIZE_TEXT_ENCODER="
+                f"{self._quantize_text_encoder}) needs CUDA; set both to "
+                "'none' to load on CPU"
+            )
+        if "nvfp4" in (self._quantize_transformer, self._quantize_text_encoder):
+            log.warning(
+                "NVFP4 is selected (transformer=%s, text_encoder=%s). With the "
+                "installed diffusers, ModelOpt and torchao versions on GB10, NVFP4 "
+                "does NOT reduce resident memory (spec 008 F-7) and may use more "
+                "than BF16 while loading. Prefer int8 or fp8.",
+                self._quantize_transformer,
+                self._quantize_text_encoder,
+            )
+        try:
+            quantization_config = self._build_quantization_config()
+        except Exception as err:
+            raise RuntimeError(
+                "Failed to load Qwen-Image-2.1 with quantization "
+                f"(transformer={self._quantize_transformer}, "
+                f"text_encoder={self._quantize_text_encoder}): "
+                f"{type(err).__name__}: {err}"
+            ) from err
 
         if self._device == "cpu":
             log.warning(
@@ -131,10 +402,26 @@ class QwenImage21(BaseImageModel):
                 "(~68GB peak for a 2K generate, less at 1K). Stop vLLM before starting image generation."
             )
 
-        self._pipeline = QwenImage21Pipeline.from_pretrained(
-            self.MODEL_ID,
-            **kwargs,
-        )
+        if quantization_config is not None:
+            log.info(
+                "Quantizing at load: transformer=%s, text_encoder=%s "
+                "(components load one at a time)",
+                self._quantize_transformer,
+                self._quantize_text_encoder,
+            )
+            if self._memory_limit_gb is not None:
+                log.warning(
+                    "IMAGE_GPU_MEMORY_LIMIT is not applied when quantizing: "
+                    "each component loads onto GPU 0 (quantized weights are small)."
+                )
+            self._pipeline = self._load_staged(quantization_config)
+        else:
+            self._pipeline = QwenImage21Pipeline.from_pretrained(
+                self.MODEL_ID,
+                **kwargs,
+            )
+
+        self._measure_weights()
 
         if torch.cuda.is_available():
             allocated = round(torch.cuda.memory_allocated(0) / 1e9, 2)
@@ -153,6 +440,7 @@ class QwenImage21(BaseImageModel):
         if self._pipeline is not None:
             del self._pipeline
             self._pipeline = None
+            self._weight_memory_gb = None
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()

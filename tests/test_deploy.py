@@ -55,3 +55,14 @@ def test_compose_passes_resolution_settings_through(compose):  # 007 FR-007-08
     env = compose["services"]["local-image-gen-mcp"]["environment"]
     for var in ("GENERATE_OUTPUT_RESOLUTION", "MAX_OUTPUT_RESOLUTION", "EDIT_OUTPUT_RESOLUTION"):
         assert env[var] == "${%s:-}" % var
+
+
+def test_compose_passes_quantization_settings_through(compose):  # 008 FR-008-08
+    env = compose["services"]["local-image-gen-mcp"]["environment"]
+    for var in ("QUANTIZE_TRANSFORMER", "QUANTIZE_TEXT_ENCODER"):
+        assert env[var] == "${%s:-}" % var
+
+
+def test_compose_sets_expandable_segments_default(compose):  # 008 AS-5c, FR-008-11
+    env = compose["services"]["local-image-gen-mcp"]["environment"]
+    assert env["PYTORCH_CUDA_ALLOC_CONF"] == "${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"

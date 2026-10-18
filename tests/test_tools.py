@@ -402,6 +402,8 @@ def test_settings_empty_strings_become_none(monkeypatch):
 def test_settings_memory_limit_reaches_backend(monkeypatch):  # AS-13
     from unittest.mock import patch
     monkeypatch.setenv("IMAGE_GPU_MEMORY_LIMIT", "30")
+    monkeypatch.setenv("QUANTIZE_TRANSFORMER", "none")
+    monkeypatch.setenv("QUANTIZE_TEXT_ENCODER", "none")
     import models
     import config.settings as cs
     new = Settings(_env_file=None)
@@ -630,3 +632,80 @@ def test_list_aspect_ratios_real_backend_is_1024_table(monkeypatch):  # 007 AS-5
     out = server.list_aspect_ratios()
     assert out["1:1"] == {"width": 1024, "height": 1024}
     assert out["16:9"] == {"width": 1376, "height": 768}
+
+
+# ── 008: quantization settings and model info ─────────────────────────────────
+
+def test_quantize_settings_default_auto(monkeypatch):  # 008 FR-008-15
+    for v in ("QUANTIZE_TRANSFORMER", "QUANTIZE_TEXT_ENCODER"):
+        monkeypatch.delenv(v, raising=False)
+    s = Settings(_env_file=None)
+    assert (s.quantize_transformer, s.quantize_text_encoder) == ("auto", "auto")
+
+
+def test_quantize_settings_empty_string_is_auto(monkeypatch):
+    monkeypatch.setenv("QUANTIZE_TRANSFORMER", "")
+    monkeypatch.setenv("QUANTIZE_TEXT_ENCODER", "")
+    s = Settings(_env_file=None)
+    assert (s.quantize_transformer, s.quantize_text_encoder) == ("auto", "auto")
+
+
+@pytest.mark.parametrize("mode", ["auto", "none", "int8", "fp8", "nvfp4"])
+def test_quantize_settings_valid_modes(monkeypatch, mode):
+    monkeypatch.setenv("QUANTIZE_TRANSFORMER", mode)
+    monkeypatch.setenv("QUANTIZE_TEXT_ENCODER", mode)
+    s = Settings(_env_file=None)
+    assert (s.quantize_transformer, s.quantize_text_encoder) == (mode, mode)
+
+
+@pytest.mark.parametrize("var", ["QUANTIZE_TRANSFORMER", "QUANTIZE_TEXT_ENCODER"])
+@pytest.mark.parametrize("bad", ["bf16", "int4", "FP8x"])
+def test_quantize_settings_invalid_value_fails(monkeypatch, var, bad):  # 008 AS-4
+    monkeypatch.setenv(var, bad)
+    with pytest.raises(Exception):
+        Settings(_env_file=None)
+
+
+def test_quantize_settings_reach_backend(monkeypatch):  # 008 FR-008-01
+    import models
+    import config.settings as cs
+    monkeypatch.setenv("QUANTIZE_TRANSFORMER", "fp8")
+    monkeypatch.setenv("QUANTIZE_TEXT_ENCODER", "int8")
+    monkeypatch.setattr(cs, "settings", Settings(_env_file=None))
+    m = models.load_model()
+    assert (m._quantize_transformer, m._quantize_text_encoder) == ("fp8", "int8")
+
+
+def test_get_model_info_has_no_quantization_for_plain_backend(fake):
+    info = server.get_model_info()
+    assert "quantize_transformer" not in info  # BaseImageModel default is {}
+
+
+def test_get_model_info_reports_quantization(fake, monkeypatch):  # 008 FR-008-07
+    monkeypatch.setattr(
+        type(fake), "quantization_info",
+        property(lambda self: {
+            "quantize_transformer": "nvfp4", "quantize_text_encoder": "none",
+            "weight_memory_gb": {"transformer": 4.2, "text_encoder": 17.5, "vae": 0.7},
+        }),
+        raising=False,
+    )
+    info = server.get_model_info()
+    assert info["quantize_transformer"] == "nvfp4"
+    assert info["quantize_text_encoder"] == "none"
+    assert info["weight_memory_gb"]["transformer"] == 4.2
+
+
+def test_get_model_info_shows_configured_only_when_different(fake, monkeypatch):  # 008 FR-008-15
+    from unittest.mock import patch
+    with patch("torch.cuda.is_available", return_value=True):
+        auto = QwenImage21()
+        explicit = QwenImage21(quantize_transformer="int8", quantize_text_encoder="fp8")
+    a, e = auto.quantization_info, explicit.quantization_info
+    assert (a["quantize_transformer"], a["quantize_text_encoder"]) == ("int8", "int8")
+    assert (a["configured_quantize_transformer"], a["configured_quantize_text_encoder"]) == ("auto", "auto")
+    assert not any(k.startswith("configured_") for k in e)
+    monkeypatch.setattr(type(fake), "quantization_info", property(lambda self: a), raising=False)
+    info = server.get_model_info()
+    assert info["quantize_transformer"] == "int8"
+    assert info["configured_quantize_transformer"] == "auto"
