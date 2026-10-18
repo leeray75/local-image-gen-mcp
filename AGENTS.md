@@ -75,11 +75,11 @@ Match the surrounding code:
 ## Model and runtime pitfalls
 
 - Pass `device_map` to `from_pretrained()`. **Never call `.to(device)` afterwards**: the pipeline uses meta-tensor init, and `.to()` raises `NotImplementedError: Cannot copy out of meta tensor`. On CUDA the code uses `device_map="balanced"`, because accelerate ignores `max_memory` with `"cuda"`.
-- `IMAGE_GPU_MEMORY_LIMIT` (in GB, a `Settings` field) caps device memory through `max_memory` and offloads the rest to the CPU. The model needs about 33 GB of weights, and measured peaks are ~68 GB for a 2K generate and ~76 GB for a 2K edit. Because CPU and GPU share one RAM pool, the cap does NOT reduce total memory use and does NOT make the server fit alongside vLLM: stop vLLM first. Compose sets it to 40. Don't replace it with a Docker memory limit, which only gets the container OOM-killed.
+- `IMAGE_GPU_MEMORY_LIMIT` (in GB, a `Settings` field) caps device memory through `max_memory` and offloads the rest to the CPU. The model needs about 33 GB of weights, and measured peaks are ~68 GB for a 2K generate and ~40 GB for an edit at the default 1024 (~76–81 GB at 2048). Because CPU and GPU share one RAM pool, the cap does NOT reduce total memory use and does NOT make the server fit alongside vLLM: stop vLLM first. Compose sets it to 40. Don't replace it with a Docker memory limit, which only gets the container OOM-killed.
 - Qwen's CFG kwarg is `true_cfg_scale`, not `guidance_scale`.
 - **Guidance is off by default** (`true_cfg_scale=1.0`, 40 steps). `negative_prompt` is ignored unless `cfg_scale > 1`, so the backend only passes it when set and the server warns.
 - **The VAE always returns RGBA.** The backend converts to RGB unless `transparent=True`. Transparency works by wrapping the prompt in the model card's RGBA phrasing.
-- **Editing:** pass `image=[...]` plus `output_resolution=2048`. With no `width`/`height`, the output follows the **last** reference's aspect ratio. Reference order is "Picture N" order, so never reorder. Known issue: 2K edits show over-sharpening artifacts, suspected to come from `output_resolution=2048` (spec 005 F-1).
+- **Editing:** pass `image=[...]` plus `output_resolution=<EDIT_OUTPUT_RESOLUTION>` (a `Settings` field, multiple of 32 in [512, 2048], default 1024, passed to the backend by `load_model()`). With no `width`/`height`, the output follows the **last** reference's aspect ratio. Reference order is "Picture N" order, so never reorder. `output_resolution=2048` produced over-sharpened, instruction-ignoring edits (spec 005 F-1); the 006 A/B test found 1024 clean, so 1024 is the default.
 - **UUID trap:** only a canonical hyphenated 36-char UUID counts as an `image_id`. A bare 32-hex string is valid base64 and is decoded as such.
 - Don't change `use_kv_cache` between calls (determinism).
 - `Image(data=...)` takes raw PNG bytes. Don't base64-encode them first.
@@ -89,7 +89,7 @@ Match the surrounding code:
 - Tests must run without a GPU. Patch `models.qwen_image_2_1.QwenImage21Pipeline`, the way `tests/test_models.py` does.
 - Tests that import `server` or `storage` need `IMAGE_OUTPUT_DIR` pointing at a writable temporary directory (use `tmp_path` / `monkeypatch`).
 - `tests/conftest.py` sets `IMAGE_OUTPUT_DIR` before imports. `tests/test_tools.py` drives the tools with a fake `BaseImageModel` and a mock `ctx`; when you touch tools, resources or the store, add tests there.
-- Run the suite in the project image, not on the host: `docker build -f docker/Dockerfile -t local-image-gen-mcp:qwen21-test .`, then `docker run --rm --entrypoint bash -v "$PWD":/app -w /app local-image-gen-mcp:qwen21-test -c 'pip install -q pytest pytest-asyncio && IMAGE_OUTPUT_DIR=/tmp/out python -m pytest tests -v'` (no `--gpus`).
+- Run the suite in the project image, not on the host: `docker build -f docker/Dockerfile -t local-image-gen-mcp:qwen21-test .`, then `docker run --rm --entrypoint bash -v "$PWD":/app -w /app local-image-gen-mcp:qwen21-test -c 'pip install -q pytest pytest-asyncio pyyaml && IMAGE_OUTPUT_DIR=/tmp/out python -m pytest tests -v'` (no `--gpus`).
 - GPU-only behavior (generation determinism, memory cap, healthcheck) is checked by hand, using the acceptance scenarios in `docs/specs/`.
 
 ## Spec-driven workflow
@@ -117,9 +117,12 @@ For a new feature or a change in behavior:
 
 ## Deployment notes
 
+- `docker-compose.override.yml` joins the external network named by `AI_BRIDGE_NETWORK` (default `ai-litellm-proxy_ai-bridge`, the LiteLLM stack's real name; a bare `ai-bridge` does not exist). Compose reads it; the server does not.
+- The MCP SDK rejects request bodies over 4 MiB with HTTP 413 before any tool runs. `MAX_REQUEST_BODY_MB` (a `Settings` field, default computed as `ceil(10 × MAX_REFERENCE_IMAGE_MB × 4/3) + 1` = 268) is passed to `FastMCP(max_request_body_size=…)` in bytes. Tests that call tool functions directly bypass this limit, so keep the HTTP-level test. Prefer `image_id` references over base64.
 - The base image is `nvcr.io/nvidia/pytorch:26.04-py3`, which supports Blackwell on aarch64. The image runs as root. Python deps are installed with `PIP_CONSTRAINT="" pip install`, and torch is **not** installed, so NVIDIA's build is kept.
 - Dependency versions appear in both `docker/Dockerfile` and `pyproject.toml`. Update both.
-- The healthcheck is a raw TCP connect, because `/mcp` returns 406 without MCP headers, so `curl -f` always fails. The start period is 180 s. The first start downloads about 33 GB into the mounted `~/.cache/huggingface` (huggingface_hub ≥ 1.x keeps the files in the shared `hub/blobs/` store). Later starts reuse them. The Dockerfile copies the app code *before* `pip install`, so a code-only change reinstalls all deps on rebuild (spec 005 T023).
+- The healthcheck is a raw TCP connect, because `/mcp` returns 406 without MCP headers, so `curl -f` always fails. The start period is 180 s. The first start downloads about 33 GB into the mounted `~/.cache/huggingface` (huggingface_hub ≥ 1.x keeps the files in the shared `hub/blobs/` store). Later starts reuse them. The Dockerfile copies the app code *after* `pip install`, so a code-only change reuses the cached dependency layer on rebuild. Keep that order.
+- Compose mounts the named volumes `image-gen-cuda-cache` (`/root/.nv`) and `image-gen-torch-cache` (`/root/.cache/torch`) so compiled GPU kernels survive container recreation. Never mount all of `/root/.cache`, which would shadow the HuggingFace bind mount. The CUDA cache is invalidated by NVIDIA driver upgrades; the torch kernel caches are keyed by code and toolkit version, so updates recompile automatically. Force a full recompile with `docker volume rm docker_image-gen-cuda-cache docker_image-gen-torch-cache` (compose project prefix), or `CUDA_CACHE_DISABLE=1` for one run.
 
 ## Commits and pull requests
 

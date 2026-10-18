@@ -147,7 +147,7 @@ Configure a Streamable HTTP server with the URL `http://localhost:8500/mcp`. In 
 |-----------|------|---------|-------------|
 | `prompt` | `str` | *(required)* | Edit instruction. Refer to references as "Picture 1..N" by position. |
 | `images` | `list[str]` | *(required)* | 1-10 ordered references: store `image_id`s (preferred) and/or base64 PNG/JPEG/WebP (optional `data:` prefix), each at most `MAX_REFERENCE_IMAGE_MB` decoded. |
-| `aspect_ratio` | `str \| null` | `null` | `null` = aspect ratio of the last reference at ~2048² area. |
+| `aspect_ratio` | `str \| null` | `null` | `null` = aspect ratio of the last reference at about `EDIT_OUTPUT_RESOLUTION`² pixels of area (default 1024; shown by `get_model_info`). |
 | `transparent` | `bool` | `false` | e.g. extract a subject onto a transparent background |
 | `negative_prompt`, `num_inference_steps`, `cfg_scale`, `seed` | | | as for `generate_image` |
 
@@ -190,6 +190,9 @@ edit_image(prompt="Extract the main subject from Picture 1 ...", images=["<base6
 | `DEFAULT_CFG_SCALE` | *(unset)* | Optional override of the default CFG (backend default 1.0; clamped 1.0-10.0) |
 | `IMAGE_GPU_MEMORY_LIMIT` | *(unset; compose sets 40)* | Device-memory cap in GB (accelerate `max_memory`) |
 | `MAX_REFERENCE_IMAGE_MB` | `20` | Max decoded size of one `edit_image` reference |
+| `MAX_REQUEST_BODY_MB` | *(unset = computed, 268)* | Total HTTP request-body limit in MB; the MCP SDK's own default of 4 MB would reject base64 references above ~3 MB with HTTP 413. Computed as `ceil(10 × MAX_REFERENCE_IMAGE_MB × 4/3) + 1`; must be ≥ 4. Prefer `image_id`s over base64 for large or chained images |
+| `AI_BRIDGE_NETWORK` | `ai-litellm-proxy_ai-bridge` | Name of the external Docker network joined by `docker-compose.override.yml` (read by compose, not by the server) |
+| `EDIT_OUTPUT_RESOLUTION` | `1024` | Edit output size: about this many pixels per side in area (multiple of 32, 512-2048; empty = default). `get_model_info` reports the value in effect |
 | `TORCH_DTYPE` | `bfloat16` | Torch dtype: `bfloat16` or `float32` |
 | `HF_TOKEN` | *(required)* | HuggingFace API token (from environment only) |
 
@@ -225,14 +228,15 @@ if settings.image_model == "flux_schnell":
 
 ## Memory Requirements
 
-Measured on the DGX Spark (GB10) on 2026-10-18:
+Measured on the DGX Spark (GB10) on 2026-10-18. Memory is the image server's approximate share: the system-wide peak minus the other running services.
 
 | | Memory | Time |
 |---|---|---|
 | Idle, model loaded (bfloat16 weights) | ~30–32 GB | — |
 | 2K `generate_image` (1:1, 40 steps) | ~68 GB peak | ~256 s |
 | 2K `generate_image`, `transparent=true` | ~68 GB peak | ~256 s |
-| 2K `edit_image` (1 reference) | ~76 GB peak | ~372 s |
+| `edit_image`, 1 reference, default `EDIT_OUTPUT_RESOLUTION=1024` | ~40 GB peak | ~61 s |
+| `edit_image` at `EDIT_OUTPUT_RESOLUTION=2048` (not recommended) | ~76–81 GB peak | ~340–372 s |
 
 The GB10 has 128 GB shared by CPU and GPU, so run this server with the vLLM engine **stopped**. With vLLM at `gpu-memory-utilization 0.6`, only ~28 GiB was free. To switch:
 
@@ -241,9 +245,17 @@ docker stop qwen3-8-27b-nvfp4-engine && (cd docker && docker compose up -d)   # 
 docker stop local-image-gen-mcp && docker start qwen3-8-27b-nvfp4-engine        # back to vLLM
 ```
 
- `IMAGE_GPU_MEMORY_LIMIT` only limits where accelerate places layers; offloaded layers live in the same physical RAM on unified memory, so the cap does **not** let the server fit alongside vLLM. Editing needs more activation memory than text-to-image, and more again with many references.
+ `IMAGE_GPU_MEMORY_LIMIT` only limits where accelerate places layers; offloaded layers live in the same physical RAM on unified memory, so the cap does **not** let the server fit alongside vLLM. At the default 1024, an edit needs less memory than a 2K generate. More references, or a higher `EDIT_OUTPUT_RESOLUTION`, need more.
 
-**Known issue:** 2K edits currently show over-sharpening and HDR-like artifacts ([spec 005](docs/specs/005-qwen-image-2-1/spec.md), finding F-1).
+**Edit quality:** edits at `output_resolution=2048` showed over-sharpening and ignored instructions ([spec 005](docs/specs/005-qwen-image-2-1/spec.md), finding F-1). The A/B test in [spec 006](docs/specs/006-open-items-closeout/spec.md) found 1024 clean, so `EDIT_OUTPUT_RESOLUTION` defaults to 1024. Raise it up to 2048 at your own risk.
+
+### Rebuilds and compile caches
+
+- **Rebuilds are fast after code-only changes.** The Dockerfile installs dependencies before copying the app source, so a change to `server.py`, `models/`, `config/` or `storage/` reuses the cached `pip install` layer.
+- **Compile caches persist.** Compose mounts the named volumes `image-gen-cuda-cache` (`/root/.nv`, the CUDA JIT cache) and `image-gen-torch-cache` (`/root/.cache/torch`, PyTorch kernel cache), so GPU kernels compiled on earlier runs survive `docker compose down`/`up` and `up --build`. The HuggingFace cache bind mount is separate and untouched.
+- **Measured effect:** about 6 s off the first generation after a recreate. Startup is dominated by the ~3¼ min weight load, which no cache can skip ([spec 006 research R-5](docs/specs/006-open-items-closeout/research.md)).
+- **Updates recompile automatically.** The CUDA cache is invalidated by an NVIDIA driver upgrade; the PyTorch kernel caches are keyed by code and toolkit version.
+- **Force a full recompile:** remove the volumes (`docker volume rm docker_image-gen-cuda-cache docker_image-gen-torch-cache`; the prefix is the compose project name), or set `CUDA_CACHE_DISABLE=1` for one run.
 
 ## Running Tests
 
@@ -254,7 +266,7 @@ uv run pytest tests/ -v
 # Or inside the project image (no GPU, no weights); build it once first:
 docker build -f docker/Dockerfile -t local-image-gen-mcp:qwen21-test .
 docker run --rm --entrypoint bash -v "$PWD":/app -w /app local-image-gen-mcp:qwen21-test \
-  -c 'pip install -q pytest pytest-asyncio && IMAGE_OUTPUT_DIR=/tmp/out python -m pytest tests -v'
+  -c 'pip install -q pytest pytest-asyncio pyyaml && IMAGE_OUTPUT_DIR=/tmp/out python -m pytest tests -v'
 
 # Specific test file
 uv run pytest tests/test_models.py -v

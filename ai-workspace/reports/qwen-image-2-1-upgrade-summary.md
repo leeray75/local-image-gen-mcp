@@ -1,5 +1,7 @@
 # Qwen-Image-2.1 Upgrade (Feature 005) — Summary Report
 
+> **Historical snapshot.** Superseded in part by [`open-items-closeout-0.2.0-summary.md`](open-items-closeout-0.2.0-summary.md): F-1 is fixed (edit default 1024), T022 and T023 are done, and the code is committed. For current state see `CHANGELOG.md` and `docs/specs/SPECS.md`.
+
 **Date:** 2026-10-18
 **Branch:** `feature/qwen-image-2-1` (from `feature/memory-cap-retrieval-tools-sdd-specs`)
 **Spec:** [`docs/specs/005-qwen-image-2-1/`](../../docs/specs/005-qwen-image-2-1/spec.md)
