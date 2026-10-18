@@ -6,7 +6,8 @@ images) and native transparent (RGBA) generation.
 
 Memory on GB10 unified memory (128GB):
   The weights are about 33GB in BF16; measured peaks are ~68GB for a 2K
-  generate and ~40GB for an edit at the default 1024 edit resolution. This does
+  generate and ~40GB for an edit at 1024 (the default text-to-image size is
+  1024 too since spec 007; its peak is estimated at or below ~40GB). This does
   NOT fit next to a running vLLM engine, so stop vLLM first. IMAGE_GPU_MEMORY_LIMIT caps accelerate's device placement via
   max_memory, but offloaded layers live in the same physical RAM on unified
   memory, so the cap does not reduce total memory use.
@@ -18,6 +19,7 @@ Meta-tensor rule:
 """
 
 import logging
+import math
 import time
 
 import torch
@@ -33,8 +35,8 @@ class QwenImage21(BaseImageModel):
 
     MODEL_ID = "Qwen/Qwen-Image-2.1"
 
-    # Native 2K sizes from the model card
-    ASPECT_RATIOS: dict[str, tuple[int, int]] = {
+    # Official 2K sizes from the model card (used as-is at resolution 2048)
+    CARD_SIZES_2048: dict[str, tuple[int, int]] = {
         "1:1": (2048, 2048),
         "4:3": (2400, 1792),
         "3:4": (1792, 2400),
@@ -42,6 +44,12 @@ class QwenImage21(BaseImageModel):
         "2:3": (1696, 2528),
         "16:9": (2752, 1536),
         "9:16": (1536, 2752),
+    }
+
+    # Ratio keys as (w, h) factors, for the pipeline's calculate_dimensions rule
+    RATIO_FACTORS: dict[str, tuple[int, int]] = {
+        "1:1": (1, 1), "4:3": (4, 3), "3:4": (3, 4), "3:2": (3, 2),
+        "2:3": (2, 3), "16:9": (16, 9), "9:16": (9, 16),
     }
 
     # Phrasing from the model card for native RGBA generation
@@ -55,10 +63,12 @@ class QwenImage21(BaseImageModel):
         torch_dtype_str: str = "bfloat16",
         memory_limit_gb: int | None = None,
         edit_output_resolution: int = 1024,
+        generate_output_resolution: int = 1024,
     ) -> None:
         self._pipeline: QwenImage21Pipeline | None = None
         self._memory_limit_gb = memory_limit_gb
         self._edit_output_resolution = edit_output_resolution
+        self._generate_output_resolution = generate_output_resolution
         self._torch_dtype = (
             torch.bfloat16 if torch_dtype_str == "bfloat16" else torch.float32
         )
@@ -118,7 +128,7 @@ class QwenImage21(BaseImageModel):
             )
             log.warning(
                 "No memory cap — model will use ~33GB weights plus activations "
-                "(~68GB peak for a 2K generate). Stop vLLM before starting image generation."
+                "(~68GB peak for a 2K generate, less at 1K). Stop vLLM before starting image generation."
             )
 
         self._pipeline = QwenImage21Pipeline.from_pretrained(
@@ -232,10 +242,27 @@ class QwenImage21(BaseImageModel):
         """Human-readable model identifier."""
         return "Qwen-Image-2.1"
 
+    def sizes_for(self, resolution: int) -> dict[str, tuple[int, int]]:
+        """Size table for a target side length.
+
+        2048 returns the model card's table; any other value applies the
+        pipeline's calculate_dimensions rule with area = resolution^2 (the
+        height comes from the unrounded width).
+        """
+        if resolution == 2048:
+            return dict(self.CARD_SIZES_2048)
+        sizes = {}
+        for key, (rw, rh) in self.RATIO_FACTORS.items():
+            ratio = rw / rh
+            width = math.sqrt(resolution * resolution * ratio)
+            height = width / ratio
+            sizes[key] = (round(width / 32) * 32, round(height / 32) * 32)
+        return sizes
+
     @property
     def aspect_ratios(self) -> dict[str, tuple[int, int]]:
-        """Copy of the native 2K size table."""
-        return dict(self.ASPECT_RATIOS)
+        """Size table for the configured GENERATE_OUTPUT_RESOLUTION."""
+        return self.sizes_for(self._generate_output_resolution)
 
     @property
     def default_inference_steps(self) -> int:

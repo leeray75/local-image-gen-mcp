@@ -58,15 +58,44 @@ def test_model_name_and_properties():
     assert m.supports_editing is True
 
 
-def test_aspect_ratios_table_and_copy():
+CARD_2048 = {
+    "1:1": (2048, 2048), "4:3": (2400, 1792), "3:4": (1792, 2400),
+    "3:2": (2528, 1696), "2:3": (1696, 2528),
+    "16:9": (2752, 1536), "9:16": (1536, 2752),
+}
+TABLE_1024 = {
+    "1:1": (1024, 1024), "16:9": (1376, 768), "9:16": (768, 1376),
+    "4:3": (1184, 896), "3:4": (896, 1184), "3:2": (1248, 832), "2:3": (832, 1248),
+}
+
+
+def test_aspect_ratios_default_is_1024_table_and_copy():  # 007 FR-007-03/04
     m = QwenImage21()
-    assert m.aspect_ratios == {
-        "1:1": (2048, 2048), "4:3": (2400, 1792), "3:4": (1792, 2400),
-        "3:2": (2528, 1696), "2:3": (1696, 2528),
-        "16:9": (2752, 1536), "9:16": (1536, 2752),
-    }
+    assert m.aspect_ratios == TABLE_1024
     m.aspect_ratios["1:1"] = (1, 1)  # mutating the copy must not leak
-    assert m.aspect_ratios["1:1"] == (2048, 2048)
+    assert m.aspect_ratios["1:1"] == (1024, 1024)
+
+
+def test_sizes_for_2048_is_card_table_and_copy():
+    m = QwenImage21()
+    assert m.sizes_for(2048) == CARD_2048
+    m.sizes_for(2048)["1:1"] = (1, 1)
+    assert m.sizes_for(2048) == CARD_2048
+
+
+def test_sizes_for_formula_at_1536():
+    sizes = QwenImage21().sizes_for(1536)
+    assert set(sizes) == set(CARD_2048)
+    assert sizes["1:1"] == (1536, 1536)
+    # w = round(sqrt(1536^2 * 16/9) / 32) * 32 = 2048; h from the unrounded width
+    assert sizes["16:9"] == (2048, 1152)
+    assert sizes["9:16"] == (1152, 2048)
+    assert all(w % 32 == 0 and h % 32 == 0 for w, h in sizes.values())
+
+
+def test_aspect_ratios_follow_generate_output_resolution():
+    assert QwenImage21(generate_output_resolution=2048).aspect_ratios == CARD_2048
+    assert QwenImage21(generate_output_resolution=512).aspect_ratios["1:1"] == (512, 512)
 
 
 def test_torch_dtype_selection():

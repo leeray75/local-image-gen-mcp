@@ -26,6 +26,9 @@ services:
       IMAGE_GPU_MEMORY_LIMIT: "40"
       # Empty = server default (see EDIT_OUTPUT_RESOLUTION in .env.example)
       EDIT_OUTPUT_RESOLUTION: ${EDIT_OUTPUT_RESOLUTION:-}
+      # Empty = server default (1024). Above MAX_OUTPUT_RESOLUTION the server refuses to start
+      GENERATE_OUTPUT_RESOLUTION: ${GENERATE_OUTPUT_RESOLUTION:-}
+      MAX_OUTPUT_RESOLUTION: ${MAX_OUTPUT_RESOLUTION:-}
     deploy:
       resources:
         reservations:

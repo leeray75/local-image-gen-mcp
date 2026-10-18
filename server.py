@@ -109,7 +109,8 @@ mcp = FastMCP(
         "references are image_ids returned by earlier calls "
         "(preferred, no bytes move) or base64 strings, so edits can be chained "
         "by image_id. "
-        "Use list_aspect_ratios to see supported output dimensions. "
+        "Use list_aspect_ratios to see the output dimensions (about "
+        "GENERATE_OUTPUT_RESOLUTION squared in area, default 1024). "
         "Use get_model_info to check GPU status, defaults and capabilities. "
         "Previously generated images can be retrieved via the image://{image_id} "
         "resource URI without re-generating them."
@@ -207,7 +208,7 @@ async def _run_generation(
         metadata["mode"], result.generation_time, result.width, result.height,
     )
 
-    # Disk write + PNG encode take seconds at 2K: keep them off the event loop
+    # Disk write + PNG encode take seconds at large sizes: keep them off the event loop
     stored, png_bytes = await asyncio.to_thread(_save_and_encode, result.image, {
         **metadata,
         "width": result.width,
@@ -248,7 +249,8 @@ async def generate_image(
     Returns the image directly as PNG (RGB, or RGBA when transparent=true). The
     image is also persisted and retrievable later via image://{image_id}; use
     get_latest_image_id to learn its ID, and pass that ID to edit_image to refine
-    it. Output is native 2K (1:1 = 2048x2048; see list_aspect_ratios).
+    it. Output is about GENERATE_OUTPUT_RESOLUTION^2 pixels of area (default 1024,
+    so 1:1 = 1024x1024; see list_aspect_ratios for the exact sizes).
 
     Guidance is OFF by default (cfg_scale=1.0, 40 steps). That is the model's
     tuned setting and the fastest. negative_prompt only takes effect when
@@ -351,11 +353,12 @@ async def edit_image(
     Output size: with aspect_ratio omitted, the result matches the aspect ratio
     of the LAST reference at about EDIT_OUTPUT_RESOLUTION^2 pixels of area (see
     edit_output_resolution in get_model_info; default 1024). With aspect_ratio
-    set, the result uses that ratio's 2K size (see list_aspect_ratios).
+    set, the result uses that ratio's size at the same EDIT_OUTPUT_RESOLUTION
+    (not the generate_image size table).
 
     Guidance is OFF by default (cfg_scale=1.0, 40 steps). negative_prompt only
     takes effect when cfg_scale > 1; otherwise it is ignored and a warning is
-    sent. Editing at 2K with many references needs a lot of memory; the server
+    sent. Editing at a high EDIT_OUTPUT_RESOLUTION with many references needs a lot of memory; the server
     runs one generation at a time.
 
     Args:
@@ -388,7 +391,8 @@ async def edit_image(
     )
 
     if aspect_ratio is not None:
-        width, height = model.aspect_ratios[aspect_ratio]
+        # F-5: size from the edit resolution, not the generate table
+        width, height = model.sizes_for(model.edit_output_resolution)[aspect_ratio]
     else:
         width = height = None
 
@@ -434,7 +438,9 @@ def list_aspect_ratios() -> dict:
     List all supported aspect ratios and their pixel dimensions.
 
     Returns a mapping of ratio string to width/height dict for the active model
-    (native 2K sizes for Qwen-Image-2.1, e.g. 1:1 = 2048x2048).
+    for generate_image (about GENERATE_OUTPUT_RESOLUTION^2 pixels of area,
+    default 1024, e.g. 1:1 = 1024x1024). edit_image with an aspect_ratio uses
+    the same ratios at EDIT_OUTPUT_RESOLUTION (see get_model_info).
     Use this before calling generate_image or edit_image to choose the format.
 
     Common use cases:
@@ -459,7 +465,9 @@ def get_model_info() -> dict:
 
     Reports max_reference_images, supports_editing, supports_transparency,
     edit_output_resolution (the edit size target as a side length in pixels;
-    null if editing is unsupported) and the default steps/CFG that apply when
+    null if editing is unsupported), generate_output_resolution (the same for
+    generate_image), max_output_resolution (the configured ceiling for both)
+    and the default steps/CFG that apply when
     you pass null (after env overrides).
     Useful for verifying the server is ready before requesting large images.
     """
@@ -490,6 +498,8 @@ def get_model_info() -> dict:
         "supports_editing": model.supports_editing,
         "supports_transparency": model.supports_transparency,
         "edit_output_resolution": model.edit_output_resolution,
+        "generate_output_resolution": settings.generate_output_resolution,
+        "max_output_resolution": settings.max_output_resolution,
         "supported_aspect_ratios": sorted(model.aspect_ratios),
         "images_generated": store.count(),
         "output_directory": settings.image_output_dir,

@@ -1,5 +1,7 @@
 # Feature 005 — Upgrade to Qwen-Image-2.1 (text-to-image, editing, RGBA)
 
+> **Note (007):** text-to-image now defaults to ~1K (`GENERATE_OUTPUT_RESOLUTION=1024`, with a `MAX_OUTPUT_RESOLUTION` ceiling). The 2048/2K sizes in this spec are the opt-in configuration, superseded by [007](../007-1k-default-resolution/spec.md) as the default.
+
 | | |
 |---|---|
 | **Status** | Implemented. GPU smoke test passed 2026-10-18, with one quality finding on edits (F-1), resolved by 006. |
@@ -25,7 +27,7 @@ Right now the server can only generate from text, at about 1.3K, and agents have
 | P-1 | Approach | **Replace** 2512. Delete the 2512 backend. 2.1 becomes the only backend. |
 | P-2 | Scope | **Full**: text-to-image, image editing, and RGBA output |
 | P-3 | Defaults | **Backend-native**: tool params default to `null`, meaning "use the backend's default" |
-| P-4 | T2I resolution | The model card's **native 2K table** |
+| P-4 | T2I resolution | The model card's **native 2K table** (*superseded by 007: default 1024 via `GENERATE_OUTPUT_RESOLUTION`; the card table is used at 2048*) |
 | P-5 | Edit tool | A separate **`edit_image`** tool. `generate_image` stays text-only. |
 | P-6 | Reference input | **Store image IDs and base64** strings, which can be mixed |
 | P-7 | Edit output size | Same aspect ratio as the input, **2K-class** (`output_resolution=2048`; *superseded by 006: default 1024, `EDIT_OUTPUT_RESOLUTION`*), with an optional `aspect_ratio` override |
@@ -77,7 +79,7 @@ As in 001: **Agent**, **Operator**, and **Backend author**.
   - how a prompt is phrased for transparency
 
   The server reads these through `BaseImageModel`.
-- **FR-005-04** The 2.1 text-to-image size table MUST be exactly: `1:1` 2048×2048, `4:3` 2400×1792, `3:4` 1792×2400, `3:2` 2528×1696, `2:3` 1696×2528, `16:9` 2752×1536, `9:16` 1536×2752. The ratio keys are the same seven the tool schema already accepts.
+- **FR-005-04** The 2.1 text-to-image size table MUST be exactly: `1:1` 2048×2048, `4:3` 2400×1792, `3:4` 1792×2400, `3:2` 2528×1696, `2:3` 1696×2528, `16:9` 2752×1536, `9:16` 1536×2752 (*superseded by 007: this is the table at `GENERATE_OUTPUT_RESOLUTION=2048` only; the default is the 1024 table*). The ratio keys are the same seven the tool schema already accepts.
 - **FR-005-05** 2.1 defaults MUST be: 40 steps, `true_cfg_scale` 1.0, and no negative prompt.
 
 ### Parameter resolution (both tools)
@@ -89,7 +91,7 @@ As in 001: **Agent**, **Operator**, and **Backend author**.
 
 ### `generate_image`
 
-- **FR-005-10** The tool keeps its name and its `prompt`, `aspect_ratio` and `seed` params. It gains `transparent: bool = false`. Its output size is the backend's table entry for `aspect_ratio`.
+- **FR-005-10** The tool keeps its name and its `prompt`, `aspect_ratio` and `seed` params. It gains `transparent: bool = false`. Its output size is the backend's table entry for `aspect_ratio` (*superseded by 007: sizes follow `GENERATE_OUTPUT_RESOLUTION`, default 1024*).
 
 ### `edit_image` (new)
 
@@ -199,7 +201,7 @@ Tests: `M` = `tests/test_models.py`, `R` = `tests/test_references.py`, `T` = `te
 | FR-005-01 | `QwenImage21.load` (`QwenImage21Pipeline`, `device_map="balanced"`, `max_memory`, CPU branch, no `.to()`) | M `test_load_cpu_has_no_device_map`, `test_load_cuda_capped`, `test_load_cuda_uncapped`, `test_load_never_calls_to` | ✅ (real load verified: AS-14, and again in 006) |
 | FR-005-02 | `models/qwen_image_2512.py` and `negative_defaults` deleted; `Settings.image_model` Literal | T `test_settings_reject_old_model`, `test_prompt_registration` | ✅ |
 | FR-005-03 | Properties on `BaseImageModel` / `QwenImage21`; `server.py` reads them | T `test_list_aspect_ratios_equals_backend`, `test_get_model_info` | ✅ |
-| FR-005-04 | `QwenImage21.ASPECT_RATIOS` | M `test_aspect_ratios_table_and_copy` | ✅ |
+| FR-005-04 | `QwenImage21.CARD_SIZES_2048` (renamed from `ASPECT_RATIOS` by 007; the card table now applies at 2048 only) | M `test_sizes_for_2048_is_card_table_and_copy` | ✅ (superseded by 007 for the default) |
 | FR-005-05 | `default_inference_steps`, `default_cfg_scale`, `default_negative_prompt` | M `test_model_name_and_properties` | ✅ |
 | FR-005-06 | `_resolve_params` | T `test_resolve_defaults`, `test_resolve_env_overrides` | ✅ |
 | FR-005-07 | `_resolve_params` clamps | T `test_resolve_clamps`, `test_generate_clamps` | ✅ |

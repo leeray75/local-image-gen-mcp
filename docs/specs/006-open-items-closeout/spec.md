@@ -8,6 +8,8 @@
 | **Out of scope** | 005 F-2 (memory footprint and coexisting with vLLM), by operator decision |
 | **Next** | [research.md](research.md) → [plan.md](plan.md) → [tasks.md](tasks.md) |
 
+> **Note (007):** statements here about 2K text-to-image sizes, or `edit_image` with `aspect_ratio` using the 2K table, are superseded by [007](../007-1k-default-resolution/spec.md): the default text-to-image size is now 1024 and the F-5 bug is fixed.
+
 ## Problem
 
 After 005, these items were left open in `docs/specs/`:

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+> **BREAKING** — the default text-to-image size changes from native 2K to about 1K ([spec 007](docs/specs/007-1k-default-resolution/spec.md)). `generate_image` at `1:1` now returns 1024×1024 (was 2048×2048). To get 2K back, set both `GENERATE_OUTPUT_RESOLUTION=2048` and `MAX_OUTPUT_RESOLUTION=2048`. GPU verification (1K vs 2K A/B, measured 1K peak memory) is deferred: vLLM stays up in this cycle.
+
+### Added
+- **`GENERATE_OUTPUT_RESOLUTION`** setting (multiple of 32, 512-2048, default 1024, empty = default): sizes for `generate_image` come from `QwenImage21.sizes_for(resolution)`. At 2048 it is the model card's 2K table; at any other value, the pipeline's `calculate_dimensions` rule (1024: 1:1 1024×1024, 16:9 1376×768, 9:16 768×1376, 4:3 1184×896, 3:4 896×1184, 3:2 1248×832, 2:3 832×1248)
+- **`MAX_OUTPUT_RESOLUTION`** ceiling (multiple of 32, 512-2048, default 1024): startup fails with a message naming the setting if `GENERATE_OUTPUT_RESOLUTION` or `EDIT_OUTPUT_RESOLUTION` is above it
+- `get_model_info` reports `generate_output_resolution` and `max_output_resolution`
+- Both settings are passed through in `docker/docker-compose.yml`
+
+### Changed
+- **Breaking:** default `generate_image` output is about 1K (see above); `list_aspect_ratios` returns the table for `GENERATE_OUTPUT_RESOLUTION`. Tool docstrings and server instructions no longer promise 2K
+- `QwenImage21.ASPECT_RATIOS` is now `CARD_SIZES_2048`; `BaseImageModel` gains the abstract `sizes_for(resolution)`
+
+### Fixed
+- `edit_image` with an explicit `aspect_ratio` used the 2K table, the configuration spec 006 showed produces artifacts. It now uses the size table for `EDIT_OUTPUT_RESOLUTION` (spec 007 F-5)
+
 ## [0.2.0] — 2026-10-18
 
 > **BREAKING** — upgrade to Qwen-Image-2.1 ([spec 005](docs/specs/005-qwen-image-2-1/spec.md)). Defaults and output sizes change, `negative_defaults` is removed and `IMAGE_MODEL=qwen_image_2512` is rejected. Qwen-Image-2.1 is under the Qwen Research License (non-commercial use only). GPU smoke test passed on 2026-10-18 on a DGX Spark GB10:

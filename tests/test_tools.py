@@ -43,6 +43,10 @@ class FakeModel(BaseImageModel):
     def model_name(self): return "Fake"
     @property
     def aspect_ratios(self): return dict(self.RATIOS)
+
+    def sizes_for(self, resolution):
+        # distinct from RATIOS so tests can tell which table a tool used
+        return {k: (w * resolution // 64, h * resolution // 64) for k, (w, h) in self.RATIOS.items()}
     @property
     def default_inference_steps(self): return 40
     @property
@@ -117,9 +121,9 @@ def test_tool_functions_are_directly_callable():
 
 def test_ratio_literal_matches_backend_table_keys():
     from typing import get_args
-    assert set(get_args(server.Ratio)) == set(QwenImage21.ASPECT_RATIOS)
+    assert set(get_args(server.Ratio)) == set(QwenImage21.CARD_SIZES_2048)
     schema = server.mcp._tool_manager.get_tool("generate_image").parameters
-    assert set(schema["properties"]["aspect_ratio"]["enum"]) == set(QwenImage21.ASPECT_RATIOS)
+    assert set(schema["properties"]["aspect_ratio"]["enum"]) == set(QwenImage21.CARD_SIZES_2048)
 
 
 def test_list_aspect_ratios_equals_backend(fake):
@@ -133,7 +137,9 @@ def test_tool_docstrings_cover_contract():
     for doc in (gen, edit):
         assert "cfg_scale > 1" in doc and "transparent" in doc
         assert "base64" in doc and "image ID" in doc
-    assert "2048" in gen and "default 1024" in edit
+    assert "GENERATE_OUTPUT_RESOLUTION" in gen and "default 1024" in gen
+    assert "2K" not in gen and "2K" not in edit and "2K" not in server.list_aspect_ratios.__doc__
+    assert "default 1024" in edit
     assert "Picture" in edit and "1-10" in edit
 
 
@@ -244,7 +250,7 @@ async def test_edit_mixed_references(fake, ctx):
 async def test_edit_with_aspect_ratio_override(fake, ctx):
     await server.edit_image("x", [b64png()], aspect_ratio="1:1", ctx=ctx)
     req = fake.requests[0]
-    assert (req.width, req.height) == (64, 64)
+    assert (req.width, req.height) == (1024, 1024)  # edit table (F-5), not generate table
     assert server.store.list_all()[0].aspect_ratio == "1:1"
 
 
@@ -312,6 +318,8 @@ def test_get_model_info(fake):
     assert info["has_default_negative_prompt"] is False
     assert info["supported_aspect_ratios"] == sorted(fake.RATIOS)
     assert info["edit_output_resolution"] == 1024  # 006 AS-3
+    assert info["generate_output_resolution"] == 1024  # 007 AS-5
+    assert info["max_output_resolution"] == 1024
 
 
 def test_get_model_info_resolved_with_env(fake, monkeypatch):
@@ -413,6 +421,7 @@ def test_settings_memory_limit_reaches_backend(monkeypatch):  # AS-13
 def test_edit_output_resolution_default_and_valid(monkeypatch):
     monkeypatch.delenv("EDIT_OUTPUT_RESOLUTION", raising=False)
     assert Settings(_env_file=None).edit_output_resolution == 1024
+    monkeypatch.setenv("MAX_OUTPUT_RESOLUTION", "2048")
     monkeypatch.setenv("EDIT_OUTPUT_RESOLUTION", "2048")
     assert Settings(_env_file=None).edit_output_resolution == 2048
     monkeypatch.setenv("EDIT_OUTPUT_RESOLUTION", "512")
@@ -523,3 +532,101 @@ async def test_body_over_4mib_is_not_rejected_with_413():
         too_big = b"x" * (server.mcp.settings.max_request_body_size + 1)
         r = await client.post(server.settings.mcp_path, content=too_big, headers=headers)
         assert r.status_code == 413
+
+
+# ── 007: generate resolution, ceiling, F-5 ────────────────────────────────────
+
+def test_resolution_settings_defaults(monkeypatch):
+    for v in ("GENERATE_OUTPUT_RESOLUTION", "MAX_OUTPUT_RESOLUTION", "EDIT_OUTPUT_RESOLUTION"):
+        monkeypatch.delenv(v, raising=False)
+    s = Settings(_env_file=None)
+    assert (s.generate_output_resolution, s.max_output_resolution) == (1024, 1024)
+
+
+@pytest.mark.parametrize("var", ["GENERATE_OUTPUT_RESOLUTION", "MAX_OUTPUT_RESOLUTION"])
+@pytest.mark.parametrize("value", ["1000", "256", "4096"])
+def test_new_resolution_settings_invalid(monkeypatch, var, value):
+    monkeypatch.setenv(var, value)
+    with pytest.raises(Exception):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("var", ["GENERATE_OUTPUT_RESOLUTION", "MAX_OUTPUT_RESOLUTION"])
+def test_new_resolution_settings_empty_is_default(monkeypatch, var):
+    monkeypatch.setenv(var, "")
+    s = Settings(_env_file=None)
+    assert (s.generate_output_resolution, s.max_output_resolution) == (1024, 1024)
+
+
+@pytest.mark.parametrize("var", ["GENERATE_OUTPUT_RESOLUTION", "EDIT_OUTPUT_RESOLUTION"])
+def test_ceiling_rejects_resolution_above_max(monkeypatch, var):  # 007 AS-3
+    monkeypatch.setenv(var, "2048")
+    with pytest.raises(ValueError) as exc:
+        Settings(_env_file=None)
+    assert (f"{var}=2048 exceeds MAX_OUTPUT_RESOLUTION=1024; "
+            "raise MAX_OUTPUT_RESOLUTION to allow it") in str(exc.value)
+
+
+def test_ceiling_raised_allows_2048(monkeypatch):
+    monkeypatch.setenv("GENERATE_OUTPUT_RESOLUTION", "2048")
+    monkeypatch.setenv("EDIT_OUTPUT_RESOLUTION", "2048")
+    monkeypatch.setenv("MAX_OUTPUT_RESOLUTION", "2048")
+    s = Settings(_env_file=None)
+    assert (s.generate_output_resolution, s.edit_output_resolution) == (2048, 2048)
+
+
+def test_generate_output_resolution_reaches_backend(monkeypatch):
+    import models
+    import config.settings as cs
+    monkeypatch.setenv("GENERATE_OUTPUT_RESOLUTION", "1536")
+    monkeypatch.setenv("MAX_OUTPUT_RESOLUTION", "2048")
+    monkeypatch.setattr(cs, "settings", Settings(_env_file=None))
+    assert models.load_model().aspect_ratios["1:1"] == (1536, 1536)
+
+
+class _RealSizesModel(QwenImage21):
+    """Real QwenImage21 size tables with a recording generate(); no pipeline."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.requests = []
+
+    def generate(self, request):
+        self.requests.append(request)
+        w, h = request.width or 40, request.height or 30
+        return GenerationResult(PILImage.new("RGB", (w, h)), request.seed, 0.01, w, h)
+
+
+async def test_generate_uses_1024_table_by_default(monkeypatch, tmp_path, ctx):  # 007 AS-1
+    model = _RealSizesModel()
+    monkeypatch.setattr(server, "_model", model)
+    monkeypatch.setattr(server, "store", ImageStore(tmp_path))
+    monkeypatch.setattr(server, "_generation_lock", asyncio.Lock())
+    await server.generate_image("x", aspect_ratio="16:9", ctx=ctx)
+    assert (model.requests[0].width, model.requests[0].height) == (1376, 768)
+
+
+async def test_generate_uses_card_table_at_2048(monkeypatch, tmp_path, ctx):  # 007 AS-2
+    model = _RealSizesModel(generate_output_resolution=2048)
+    monkeypatch.setattr(server, "_model", model)
+    monkeypatch.setattr(server, "store", ImageStore(tmp_path))
+    monkeypatch.setattr(server, "_generation_lock", asyncio.Lock())
+    await server.generate_image("x", aspect_ratio="16:9", ctx=ctx)
+    assert (model.requests[0].width, model.requests[0].height) == (2752, 1536)
+
+
+async def test_edit_aspect_ratio_uses_edit_table_not_generate_table(monkeypatch, tmp_path, ctx):  # F-5, AS-4
+    model = _RealSizesModel(generate_output_resolution=2048, edit_output_resolution=1024)
+    monkeypatch.setattr(server, "_model", model)
+    monkeypatch.setattr(server, "store", ImageStore(tmp_path))
+    monkeypatch.setattr(server, "_generation_lock", asyncio.Lock())
+    await server.edit_image("x", [b64png()], aspect_ratio="1:1", ctx=ctx)
+    await server.edit_image("x", [b64png()], aspect_ratio="16:9", ctx=ctx)
+    assert [(r.width, r.height) for r in model.requests] == [(1024, 1024), (1376, 768)]
+
+
+def test_list_aspect_ratios_real_backend_is_1024_table(monkeypatch):  # 007 AS-5
+    monkeypatch.setattr(server, "_model", _RealSizesModel())
+    out = server.list_aspect_ratios()
+    assert out["1:1"] == {"width": 1024, "height": 1024}
+    assert out["16:9"] == {"width": 1376, "height": 768}

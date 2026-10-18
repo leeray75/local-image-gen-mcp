@@ -15,7 +15,7 @@ The server `instructions` MUST also mention `edit_image` and the `transparent` f
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
 | `prompt` | string | required | |
-| `aspect_ratio` | Ratio | `1:1` | Uses the 2K table (1:1 = 2048²) |
+| `aspect_ratio` | Ratio | `1:1` | Uses the 2K table (1:1 = 2048²); *superseded by 007: the table for `GENERATE_OUTPUT_RESOLUTION`, default 1024* |
 | `transparent` | boolean | `false` | **new**. RGBA output with the model's transparency phrasing. |
 | `negative_prompt` | string \| null | `null` | **was** the 2512 Chinese default. Only takes effect when `cfg_scale > 1`. |
 | `num_inference_steps` | integer \| null | `null` | **was** 50. `null` means the env override, or else 40. Clamped to [20, 100]. |
@@ -30,7 +30,7 @@ The server `instructions` MUST also mention `edit_image` and the `transparent` f
 |-------|------|---------|-------|
 | `prompt` | string | required | The edit instruction. It can refer to "Picture 1…N" by position. |
 | `images` | string[] (1–10) | required | An ordered list. Each entry is either a store `image_id` (a UUID from `generate_image`/`edit_image`/`images://list`) or a base64 PNG/JPEG/WebP, optionally with a `data:` URI prefix. Each one is ≤ `MAX_REFERENCE_IMAGE_MB` once decoded. |
-| `aspect_ratio` | Ratio \| null | `null` | `null` means the last reference's aspect ratio at about `EDIT_OUTPUT_RESOLUTION`² area (default 1024 since feature 006; originally 2048). Otherwise the 2K table size. |
+| `aspect_ratio` | Ratio \| null | `null` | `null` means the last reference's aspect ratio at about `EDIT_OUTPUT_RESOLUTION`² area (default 1024 since feature 006; originally 2048). Otherwise that ratio's size at `EDIT_OUTPUT_RESOLUTION` (*was the 2K table; fixed by 007, F-5*). |
 | `transparent` | boolean | `false` | e.g. extract a subject onto a transparent background |
 | `negative_prompt`, `num_inference_steps`, `cfg_scale`, `seed` | | | as for `generate_image` |
 
@@ -46,7 +46,7 @@ The server `instructions` MUST also mention `edit_image` and the `transparent` f
 
 ## `list_aspect_ratios` (changed)
 
-The shape is unchanged. It now returns the backend's 2K table.
+The shape is unchanged. It now returns the backend's 2K table (*superseded by 007: the table for `GENERATE_OUTPUT_RESOLUTION`, default 1024*).
 
 ## `get_model_info` (changed)
 
