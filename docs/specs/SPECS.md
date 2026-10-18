@@ -35,6 +35,7 @@ code + tests   Every requirement ID must map to code and (where testable) a test
 | [002](002-container-deployment/spec.md) | Container deployment on DGX Spark (Dockerfile, compose, healthcheck, ai-bridge) | 0.1.0 → 0.1.1 | Implemented | `plans/implementation.md` (Tasks 10–12), `reports/bugfix-v0.1.1-summary.md` |
 | [003](003-image-retrieval-tools/spec.md) | Client-side image retrieval tools (`get_image_base64`, `get_latest_image_id`) | Unreleased | Implemented, uncommitted | `plans/add-tools.md`, `reports/uncommitted-changes-report.md` |
 | [004](004-memory-bounded-loading/spec.md) | Memory-bounded model loading for coexistence with vLLM | Unreleased | Implemented, uncommitted | Uncommitted diff in `models/qwen_image_2512.py`, `docker/docker-compose.yml` |
+| [005](005-qwen-image-2-1/spec.md) | Upgrade to Qwen-Image-2.1 (native 2K text-to-image, `edit_image`, RGBA, serialization, settings cleanup) | Unreleased (breaking) | Implemented, GPU-verified (edit-quality finding F-1 open) | Branch `feature/qwen-image-2-1` |
 
 ## Document index
 
@@ -45,6 +46,7 @@ code + tests   Every requirement ID must map to code and (where testable) a test
 | [002 spec](002-container-deployment/spec.md) · [plan](002-container-deployment/plan.md) · [tasks](002-container-deployment/tasks.md) | Deployment |
 | [003 spec](003-image-retrieval-tools/spec.md) · [plan](003-image-retrieval-tools/plan.md) · [tasks](003-image-retrieval-tools/tasks.md) | Retrieval tools |
 | [004 spec](004-memory-bounded-loading/spec.md) · [plan](004-memory-bounded-loading/plan.md) · [tasks](004-memory-bounded-loading/tasks.md) | Memory cap |
+| [005 spec](005-qwen-image-2-1/spec.md) · [research](005-qwen-image-2-1/research.md) · [data model](005-qwen-image-2-1/data-model.md) · [contracts](005-qwen-image-2-1/contracts/mcp-interface.md) · [plan](005-qwen-image-2-1/plan.md) · [tasks](005-qwen-image-2-1/tasks.md) | Qwen-Image-2.1 upgrade |
 
 ## Conventions
 
@@ -60,9 +62,11 @@ Collected from the traceability tables in each spec. These are the places where 
 
 | Gap | Feature | Reference |
 |-----|---------|-----------|
-| `tests/test_tools.py` is empty — no tests for tool registration, aspect ratios, or the image store | 001, 003 | FR-001-17, FR-003-06 |
+| ~~`tests/test_tools.py` is empty~~ — closed by 005 (NFR-005-03) | 001, 003 | FR-001-17, FR-003-06 |
 | `MCP_PATH` is read into settings and logged but never passed to `FastMCP`; it only works because `/mcp` is the SDK default | 001 | FR-001-13 |
-| `cfg_scale` is documented as 1.0–10.0 but not clamped or validated | 001 | FR-001-04 |
-| `ImageStore` docstring claims the index "is rebuilt from disk on restart"; it is not | 001 | FR-001-10 |
-| Concurrent `generate_image` calls share one pipeline with no serialization | 001 | NFR-001-03 |
-| `IMAGE_GPU_MEMORY_LIMIT` is read via `os.getenv` in the model module, bypassing `Settings`; missing from `.env.example` and README | 004 | FR-004-05 |
+| ~~`cfg_scale` not clamped~~ — closed by 005 (FR-005-07) | 001 | FR-001-04 |
+| ~~`ImageStore` docstring claimed a rebuild from disk~~ — closed by 005 (T005) | 001 | FR-001-10 |
+| 2K edits show over-sharpening artifacts; suspected `output_resolution=2048` | 005 | F-1, T022 |
+| Dockerfile copies code before `pip install`, so code-only rebuilds reinstall all deps | 002 | T023 (005) |
+| ~~Concurrent calls not serialized~~ — closed by 005 (NFR-005-01) | 001 | NFR-001-03 |
+| ~~`IMAGE_GPU_MEMORY_LIMIT` bypassed `Settings`~~ — closed by 005 (FR-005-24) | 004 | FR-004-05 |

@@ -115,11 +115,13 @@ An MCP server that exposes local text-to-image generation as tools, resources an
 
 ## Traceability
 
+> **Superseded by 005:** FR-001-02 (sizes), FR-001-03/04 (steps/CFG defaults and clamping), FR-001-06 (default negative prompt), FR-001-16 (`negative_defaults`), FR-001-19 and NFR-001-03 are changed or closed by [005](../005-qwen-image-2-1/spec.md); the 2512 backend and `config/aspect_ratios.py` no longer exist.
+
 | Requirement | Implementation | Test | Status |
 |-------------|----------------|------|--------|
 | FR-001-01, 02 | `server.py` `generate_image`; `config/aspect_ratios.py` | — | ✅ (no test) |
 | FR-001-03 | `server.py` clamp | — | ✅ (no test) |
-| FR-001-04 | `server.py` | — | ⚠️ no clamp or validation |
+| FR-001-04 | `server.py` | — | ⚠️ no clamp or validation (closed by 005 FR-005-07) |
 | FR-001-05 | `server.py` seed resolution; `qwen_image_2512.generate` Generator | `test_models::test_load_and_generate` (seed echo only) | ✅ / ⏳ determinism unverified |
 | FR-001-06 | `DEFAULT_NEGATIVE_PROMPT` default | `test_default_negative_prompt_not_empty` | ✅ |
 | FR-001-07 | `ctx.report_progress`, `ctx.info` | — | ✅ |
@@ -133,5 +135,5 @@ An MCP server that exposes local text-to-image generation as tools, resources an
 | FR-001-18 | `config/settings.py` | — | ✅ |
 | FR-001-19 | CPU branch in `QwenImage2512.load` | — | ✅ |
 | NFR-001-01 | `asyncio.to_thread(model.generate, …)` | — | ✅ |
-| NFR-001-03 | `threading.Lock` in `ImageStore` | — | ⚠️ generation not serialized |
+| NFR-001-03 | `threading.Lock` in `ImageStore` | — | ⚠️ generation not serialized (closed by 005 NFR-005-01) |
 | NFR-001-05 | `tests/test_models.py` | 7 tests | ⚠️ `tests/test_tools.py` empty |

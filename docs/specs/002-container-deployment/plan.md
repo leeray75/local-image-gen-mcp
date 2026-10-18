@@ -60,6 +60,6 @@ docker logs -f local-image-gen-mcp
 
 | Risk | Mitigation |
 |------|------------|
-| First boot downloads about 15 GB and can exceed the start period | The start period only delays marking the container unhealthy, and the restart policy is `no`, so nothing kills it. Pre-warm the cache if needed. |
+| First boot downloads the weights (about 33 GB for Qwen-Image-2.1) and can exceed the start period | The start period only delays marking the container unhealthy, and the restart policy is `no`, so nothing kills it. Pre-warm the cache if needed. |
 | NGC base image update changes the torch ABI | Pin the NGC tag. Rebuild deliberately. |
 | Deps drift between the Dockerfile and `pyproject.toml` | Review both in every dependency PR |

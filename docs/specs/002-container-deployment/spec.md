@@ -9,7 +9,7 @@
 
 ## Problem
 
-The server needs to run reproducibly on the DGX Spark. That host is aarch64 with a GB10 Blackwell GPU and 128 GB of unified memory, and it already runs a vLLM / LiteLLM / Langfuse stack on the Docker network `ai-bridge`. Generic PyTorch images don't support this GPU. Monitoring has to know when the server is actually up. The first boot downloads about 15 GB of weights and shouldn't repeat that on every rebuild.
+The server needs to run reproducibly on the DGX Spark. That host is aarch64 with a GB10 Blackwell GPU and 128 GB of unified memory, and it already runs a vLLM / LiteLLM / Langfuse stack on the Docker network `ai-bridge`. Generic PyTorch images don't support this GPU. Monitoring has to know when the server is actually up. The first boot downloads the model weights (about 15 GB was the original estimate; Qwen-Image-2.1 is about 33 GB, see 005) and shouldn't repeat that on every rebuild.
 
 ## Goal
 

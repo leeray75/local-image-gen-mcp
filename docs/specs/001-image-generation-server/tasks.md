@@ -39,8 +39,8 @@ Run the tasks in order. `[P]` marks a task that can run in parallel with the oth
 
 ## Phase 5 — Closing spec gaps (open)
 
-- [ ] **T016** Clamp `cfg_scale` to [1.0, 10.0] in `generate_image`, and add a test. → FR-001-04
+- [x] **T016** *(done in 005)* Clamp `cfg_scale` to [1.0, 10.0] in `generate_image`, and add a test. → FR-001-04
 - [ ] **T017** Pass `settings.mcp_path` to the `FastMCP` constructor (confirm the keyword, R-3). → FR-001-13
-- [ ] **T018** Serialize generation with a module-level `asyncio.Lock` around the `to_thread` call. → NFR-001-03
-- [ ] **T019** Correct the `ImageStore` class docstring (no rebuild from disk). → FR-001-10
+- [x] **T018** *(done in 005)* Serialize generation with a module-level `asyncio.Lock` around the `to_thread` call. → NFR-001-03
+- [x] **T019** *(done in 005)* Correct the `ImageStore` class docstring (no rebuild from disk). → FR-001-10
 - [ ] **T020** GPU acceptance run of AS-1, AS-2, AS-5 and AS-6, with the results recorded in the CHANGELOG. → ⏳ items in the traceability table

@@ -61,5 +61,5 @@ Add two tools that give an agent a reliable, tools-only workflow: generate, find
 
 ## Notes
 
-- Base64 makes the payload about 33% larger. A 1328² PNG can be several MB of text, which counts against the client's context window. Agents should call this tool only when they need to save the file.
+- Base64 makes the payload about 33% larger. A 2K PNG (2048² since 005) is about 3–10 MB, more as base64, which counts against the client's context window. Agents should call this tool only when they need to save the file.
 - "Most recent" means newest by insertion in the in-process index. After a restart, earlier images can't be reached through these tools (FR-001-10).
