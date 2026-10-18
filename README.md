@@ -1,6 +1,6 @@
 # local-image-gen-mcp
 
-Model-agnostic MCP server for local text-to-image generation. Currently wraps [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1), one model for native-2K text-to-image, image editing (up to 10 reference images) and transparent (RGBA) output, with a pluggable backend architecture for adding new models.
+Model-agnostic MCP server for local text-to-image generation. Currently wraps [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1), one model for text-to-image (about 1K by default, 2K opt-in), image editing (up to 10 reference images) and transparent (RGBA) output, with a pluggable backend architecture for adding new models.
 
 > **License:** Qwen-Image-2.1 is released under the Qwen Research License, which is **non-commercial use only**. Check the [model card](https://huggingface.co/Qwen/Qwen-Image-2.1) before using the output commercially.
 
@@ -122,7 +122,7 @@ Configure a Streamable HTTP server with the URL `http://localhost:8500/mcp`. In 
 
 | Tool | Description |
 |------|-------------|
-| `generate_image` | Generate a native-2K image from a text prompt. Returns the image directly. |
+| `generate_image` | Generate an image from a text prompt (about 1K by default; see `GENERATE_OUTPUT_RESOLUTION`). Returns the image directly. |
 | `edit_image` | Edit or combine 1-10 reference images with an instruction. Returns the image directly. |
 | `list_aspect_ratios` | List supported aspect ratios and pixel dimensions. |
 | `get_model_info` | Model metadata, capabilities, resolved defaults and GPU memory status. |
@@ -134,7 +134,7 @@ Configure a Streamable HTTP server with the URL `http://localhost:8500/mcp`. In 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `prompt` | `str` | *(required)* | Text description. English and Chinese both work. |
-| `aspect_ratio` | `str` | `"1:1"` | One of: `1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, `2:3` (2K sizes, 1:1 = 2048x2048) |
+| `aspect_ratio` | `str` | `"1:1"` | One of: `1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, `2:3` (about `GENERATE_OUTPUT_RESOLUTION`² of area; default 1024, so 1:1 = 1024x1024; `list_aspect_ratios` shows the exact sizes) |
 | `transparent` | `bool` | `false` | `true` = RGBA PNG with a real alpha channel |
 | `negative_prompt` | `str \| null` | `null` | What to exclude. Only takes effect when `cfg_scale > 1`. |
 | `num_inference_steps` | `int \| null` | `null` (40) | Range 20-100 (clamped). |
@@ -147,7 +147,7 @@ Configure a Streamable HTTP server with the URL `http://localhost:8500/mcp`. In 
 |-----------|------|---------|-------------|
 | `prompt` | `str` | *(required)* | Edit instruction. Refer to references as "Picture 1..N" by position. |
 | `images` | `list[str]` | *(required)* | 1-10 ordered references: store `image_id`s (preferred) and/or base64 PNG/JPEG/WebP (optional `data:` prefix), each at most `MAX_REFERENCE_IMAGE_MB` decoded. |
-| `aspect_ratio` | `str \| null` | `null` | `null` = aspect ratio of the last reference at about `EDIT_OUTPUT_RESOLUTION`² pixels of area (default 1024; shown by `get_model_info`). |
+| `aspect_ratio` | `str \| null` | `null` | `null` = aspect ratio of the last reference at about `EDIT_OUTPUT_RESOLUTION`² pixels of area (default 1024; shown by `get_model_info`). A ratio gives that ratio's size at the same `EDIT_OUTPUT_RESOLUTION` (not the `generate_image` table). |
 | `transparent` | `bool` | `false` | e.g. extract a subject onto a transparent background |
 | `negative_prompt`, `num_inference_steps`, `cfg_scale`, `seed` | | | as for `generate_image` |
 
@@ -193,6 +193,8 @@ edit_image(prompt="Extract the main subject from Picture 1 ...", images=["<base6
 | `MAX_REQUEST_BODY_MB` | *(unset = computed, 268)* | Total HTTP request-body limit in MB; the MCP SDK's own default of 4 MB would reject base64 references above ~3 MB with HTTP 413. Computed as `ceil(10 × MAX_REFERENCE_IMAGE_MB × 4/3) + 1`; must be ≥ 4. Prefer `image_id`s over base64 for large or chained images |
 | `AI_BRIDGE_NETWORK` | `ai-litellm-proxy_ai-bridge` | Name of the external Docker network joined by `docker-compose.override.yml` (read by compose, not by the server) |
 | `EDIT_OUTPUT_RESOLUTION` | `1024` | Edit output size: about this many pixels per side in area (multiple of 32, 512-2048; empty = default). `get_model_info` reports the value in effect |
+| `GENERATE_OUTPUT_RESOLUTION` | `1024` | Text-to-image output size: about this many pixels per side in area (multiple of 32, 512-2048; empty = default). 2048 uses the model card's 2K table. `get_model_info` reports the value in effect |
+| `MAX_OUTPUT_RESOLUTION` | `1024` | Ceiling for `GENERATE_OUTPUT_RESOLUTION` and `EDIT_OUTPUT_RESOLUTION` (multiple of 32, 512-2048; empty = default). The server refuses to start if either is above it. To opt into 2K, raise **both** the resolution and this ceiling |
 | `TORCH_DTYPE` | `bfloat16` | Torch dtype: `bfloat16` or `float32` |
 | `HF_TOKEN` | *(required)* | HuggingFace API token (from environment only) |
 
@@ -233,7 +235,8 @@ Measured on the DGX Spark (GB10) on 2026-10-18. Memory is the image server's app
 | | Memory | Time |
 |---|---|---|
 | Idle, model loaded (bfloat16 weights) | ~30–32 GB | — |
-| 2K `generate_image` (1:1, 40 steps) | ~68 GB peak | ~256 s |
+| `generate_image` at the default `GENERATE_OUTPUT_RESOLUTION=1024` | est. ≤ ~40 GB peak (not yet measured) | est. ~60 s |
+| 2K `generate_image` (`GENERATE_OUTPUT_RESOLUTION=2048`, 1:1, 40 steps) | ~68 GB peak | ~256 s |
 | 2K `generate_image`, `transparent=true` | ~68 GB peak | ~256 s |
 | `edit_image`, 1 reference, default `EDIT_OUTPUT_RESOLUTION=1024` | ~40 GB peak | ~61 s |
 | `edit_image` at `EDIT_OUTPUT_RESOLUTION=2048` (not recommended) | ~76–81 GB peak | ~340–372 s |
@@ -245,9 +248,11 @@ docker stop qwen3-8-27b-nvfp4-engine && (cd docker && docker compose up -d)   # 
 docker stop local-image-gen-mcp && docker start qwen3-8-27b-nvfp4-engine        # back to vLLM
 ```
 
- `IMAGE_GPU_MEMORY_LIMIT` only limits where accelerate places layers; offloaded layers live in the same physical RAM on unified memory, so the cap does **not** let the server fit alongside vLLM. At the default 1024, an edit needs less memory than a 2K generate. More references, or a higher `EDIT_OUTPUT_RESOLUTION`, need more.
+ `IMAGE_GPU_MEMORY_LIMIT` only limits where accelerate places layers; offloaded layers live in the same physical RAM on unified memory, so the cap does **not** let the server fit alongside vLLM. At the default 1024, both edits and text-to-image need less memory than a 2K generate. More references, or a higher `EDIT_OUTPUT_RESOLUTION` or `GENERATE_OUTPUT_RESOLUTION`, need more. The 1K text-to-image numbers are estimates: the GPU A/B test is deferred ([spec 007](docs/specs/007-1k-default-resolution/spec.md)).
 
 **Edit quality:** edits at `output_resolution=2048` showed over-sharpening and ignored instructions ([spec 005](docs/specs/005-qwen-image-2-1/spec.md), finding F-1). The A/B test in [spec 006](docs/specs/006-open-items-closeout/spec.md) found 1024 clean, so `EDIT_OUTPUT_RESOLUTION` defaults to 1024. Raise it up to 2048 at your own risk.
+
+**Opting into 2K:** set `GENERATE_OUTPUT_RESOLUTION=2048` and `MAX_OUTPUT_RESOLUTION=2048` (and `EDIT_OUTPUT_RESOLUTION=2048` for edits, not recommended). Raising a resolution without the ceiling makes the server exit at startup with an error naming the setting. Stop vLLM first: a 2K generate peaks at ~68 GB.
 
 ### Rebuilds and compile caches
 
